@@ -1,0 +1,82 @@
+{
+  "id": "application_form_task_flow",
+  "name": "Application Form Task Workflow",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "start",
+      "type": "START"
+    },
+    {
+      "id": "UserSubmission",
+      "type": "TASK",
+      "task_template_id": "user_submission_form",
+      "input_mapping": {
+        "applicant_name": "applicant_name",
+        "justification": "justification",
+        "reviewer_comments": "reviewer_comments"
+      },
+      "output_mapping": {
+        "applicant_name": "applicant_name",
+        "justification": "justification"
+      }
+    },
+    {
+      "id": "ReviewerSubmission",
+      "type": "TASK",
+      "task_template_id": "reviewer_submission_form",
+      "input_mapping": {
+        "applicant_name": "applicant_name",
+        "justification": "justification"
+      },
+      "output_mapping": {
+        "review_outcome": "review_outcome",
+        "reviewer_comments": "reviewer_comments"
+      }
+    },
+    {
+      "id": "ReviewOutcomeGateway",
+      "type": "GATEWAY",
+      "gateway_type": "EXCLUSIVE_SPLIT"
+    },
+    {
+      "id": "end",
+      "type": "END"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_start_to_user",
+      "source_id": "start",
+      "target_id": "UserSubmission"
+    },
+    {
+      "id": "e_user_to_reviewer",
+      "source_id": "UserSubmission",
+      "target_id": "ReviewerSubmission"
+    },
+    {
+      "id": "e_reviewer_to_gateway",
+      "source_id": "ReviewerSubmission",
+      "target_id": "ReviewOutcomeGateway"
+    },
+    {
+      "id": "e_gateway_to_end_approve",
+      "source_id": "ReviewOutcomeGateway",
+      "target_id": "end",
+      "condition": "review_outcome == 'approve'"
+    },
+    {
+      "id": "e_gateway_to_end_reject",
+      "source_id": "ReviewOutcomeGateway",
+      "target_id": "end",
+      "condition": "review_outcome == 'reject'"
+    },
+    {
+      "id": "e_gateway_to_user_needs_info",
+      "source_id": "ReviewOutcomeGateway",
+      "target_id": "UserSubmission",
+      "condition": "review_outcome == 'needs_more_info'"
+    }
+  ]
+}

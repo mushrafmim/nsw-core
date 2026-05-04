@@ -1,0 +1,32 @@
+{
+  "id": "permit-application-process",
+  "name": "Permit Application Top-Level Workflow",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "start",
+      "type": "START"
+    },
+    {
+      "id": "application_task",
+      "type": "TASK",
+      "task_template_id": "application_form_task"
+    },
+    {
+      "id": "end",
+      "type": "END"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge1",
+      "source_id": "start",
+      "target_id": "application_task"
+    },
+    {
+      "id": "edge2",
+      "source_id": "application_task",
+      "target_id": "end"
+    }
+  ]
+}
