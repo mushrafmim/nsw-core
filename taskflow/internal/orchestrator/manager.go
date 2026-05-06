@@ -18,18 +18,18 @@ import (
 type TaskManager struct {
 	db       *store.TaskDB
 	registry *TaskTemplateRegistry
-	// layer1Manager wakes Layer 1 when a Layer 2 sub-workflow completes.
-	layer1Manager engine.TemporalManager
+	// onTaskCompleted wakes Layer 1 when a Layer 2 sub-workflow completes.
+	onTaskCompleted func(layer1WorkflowID string, layer1RunID string, layer1NodeID string, finalVariables map[string]any) error
 	// layer2Manager starts and wakes Layer 2 sub-workflows.
 	layer2Manager engine.TemporalManager
 }
 
-func NewTaskManager(db *store.TaskDB, registry *TaskTemplateRegistry, layer1 engine.TemporalManager, layer2 engine.TemporalManager) *TaskManager {
+func NewTaskManager(db *store.TaskDB, registry *TaskTemplateRegistry, layer2 engine.TemporalManager, onTaskCompleted func(layer1WorkflowID string, layer1RunID string, layer1NodeID string, finalVariables map[string]any) error) *TaskManager {
 	return &TaskManager{
-		db:            db,
-		registry:      registry,
-		layer1Manager: layer1,
-		layer2Manager: layer2,
+		db:              db,
+		registry:        registry,
+		onTaskCompleted: onTaskCompleted,
+		layer2Manager:   layer2,
 	}
 }
 
@@ -146,28 +146,18 @@ func (tm *TaskManager) HandleLayer2Completion(workflowID string, finalVariables 
 	// The output_mapping in workflow.json maps "reviewerform.review_outcome" -> "phase1_outcome".
 	// The engine handles this mapping before calling the completion handler,
 	// so finalVariables should already contain the mapped keys.
-	err := tm.layer1Manager.TaskDone(
-		context.Background(),
-		record.Layer1WorkflowID,
-		record.Layer1RunID,
-		record.Layer1NodeID,
-		finalVariables,
-	)
+	err := tm.onTaskCompleted(record.Layer1WorkflowID, record.Layer1RunID, record.Layer1NodeID, finalVariables)
 	if err != nil {
-		log.Printf("[TaskManager] Failed to wake Layer 1 workflow %s: %v", record.Layer1WorkflowID, err)
+		log.Printf("[TaskManager] Failed to execute task completion callback for %s: %v", record.TaskID, err)
 		return err
 	}
 
-	log.Printf("[TaskManager] Woke Layer 1 workflow %s node %s", record.Layer1WorkflowID, record.Layer1NodeID)
+	log.Printf("[TaskManager] Successfully processed completion for task %s", record.TaskID)
 	return nil
 }
 
 func (tm *TaskManager) GetDB() *store.TaskDB {
 	return tm.db
-}
-
-func (tm *TaskManager) GetLayer1Manager() engine.TemporalManager {
-	return tm.layer1Manager
 }
 
 func (tm *TaskManager) GetLayer2Manager() engine.TemporalManager {

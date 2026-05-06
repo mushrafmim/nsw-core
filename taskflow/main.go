@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -78,9 +79,19 @@ func main() {
 	)
 
 	// 4. Wire everything together
-	tm = orchestrator.NewTaskManager(db, registry, layer1Manager, layer2Manager)
+	onTaskCompleted := func(layer1WorkflowID string, layer1RunID string, layer1NodeID string, finalVariables map[string]any) error {
+		err := layer1Manager.TaskDone(context.Background(), layer1WorkflowID, layer1RunID, layer1NodeID, finalVariables)
+		if err != nil {
+			log.Printf("[TaskManager] Failed to wake Layer 1 workflow %s: %v", layer1WorkflowID, err)
+			return err
+		}
+		log.Printf("[TaskManager] Woke Layer 1 workflow %s node %s", layer1WorkflowID, layer1NodeID)
+		return nil
+	}
 
-	apiServer := api.NewServer(tm)
+	tm = orchestrator.NewTaskManager(db, registry, layer2Manager, onTaskCompleted)
+
+	apiServer := api.NewServer(tm, layer1Manager)
 	apiServer.Start(":8080")
 
 	// 5. Start workers

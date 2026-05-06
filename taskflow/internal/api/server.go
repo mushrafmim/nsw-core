@@ -15,11 +15,12 @@ import (
 )
 
 type Server struct {
-	manager *orchestrator.TaskManager
+	manager       *orchestrator.TaskManager
+	layer1Manager engine.TemporalManager
 }
 
-func NewServer(manager *orchestrator.TaskManager) *Server {
-	return &Server{manager: manager}
+func NewServer(manager *orchestrator.TaskManager, layer1Manager engine.TemporalManager) *Server {
+	return &Server{manager: manager, layer1Manager: layer1Manager}
 }
 
 func (s *Server) Start(addr string) {
@@ -79,7 +80,7 @@ func (s *Server) handleStartWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	initialVars["applicant_name"] = req.ApplicantName
 
-	err = s.manager.GetLayer1Manager().StartWorkflow(context.Background(), workflowID, def, initialVars)
+	err = s.layer1Manager.StartWorkflow(context.Background(), workflowID, def, initialVars)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to start workflow: %v", err), http.StatusInternalServerError)
 		return
