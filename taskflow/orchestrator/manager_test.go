@@ -114,10 +114,8 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 
 	// Setup TaskManager with inline callback to simulate Layer 1 wake-up
 	callbackCalled := false
-	var capturedVars map[string]any
 	onCompleted := func(l1WorkflowID string, l1RunID string, l1NodeID string, finalVars map[string]any) error {
 		callbackCalled = true
-		capturedVars = finalVars
 		return nil
 	}
 
@@ -199,7 +197,12 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 		return nil
 	}
 
-	userData := map[string]any{"userform.email": "alice@example.com"}
+	userData := map[string]any{
+		"userform": map[string]any{
+			"applicant_name": "Alice",
+			"email":          "alice@example.com",
+		},
+	}
 	err = tm.CompleteTaskStep(context.Background(), task.TaskID, userData)
 	if err != nil {
 		t.Fatalf("CompleteTaskStep failed: %v", err)
