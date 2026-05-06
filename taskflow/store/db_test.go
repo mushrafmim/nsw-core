@@ -19,9 +19,9 @@ func (t *testStore) GetTask(taskID string) (TaskRecord, bool) {
 	return record, ok
 }
 
-func (t *testStore) GetTaskByLayer2WorkflowID(layer2WorkflowID string) (TaskRecord, bool) {
+func (t *testStore) GetTaskByWorkflowID(workflowID string) (TaskRecord, bool) {
 	for _, record := range t.tasks {
-		if record.Layer2WorkflowID == layer2WorkflowID {
+		if record.TaskWorkflowID == workflowID {
 			return record, true
 		}
 	}
@@ -43,11 +43,11 @@ func TestTaskStoreInterface(t *testing.T) {
 		TaskID:           "test-1",
 		TaskType:         "TEST",
 		Status:           "PENDING_USER",
-		Layer1WorkflowID: "l1-wf-1",
-		Layer1RunID:      "l1-run-1",
-		Layer1NodeID:     "node-1",
-		Layer2WorkflowID: "l2-wf-1",
-		Layer2RunID:      "l2-run-1",
+		ParentWorkflowID: "parent-wf-1",
+		ParentRunID:      "parent-run-1",
+		ParentNodeID:     "node-1",
+		TaskWorkflowID:   "task-wf-1",
+		TaskRunID:        "task-run-1",
 		ActiveActivityID: "activity-1",
 		Data:             map[string]any{"userform": map[string]any{"name": "Alice"}},
 		CreatedAt:        time.Now(),
@@ -64,12 +64,12 @@ func TestTaskStoreInterface(t *testing.T) {
 		t.Errorf("Expected TaskType 'TEST', got %s", fetched.TaskType)
 	}
 
-	fetchedL2, ok := store.GetTaskByLayer2WorkflowID("l2-wf-1")
+	fetchedTaskWF, ok := store.GetTaskByWorkflowID("task-wf-1")
 	if !ok {
-		t.Fatal("Expected task to be fetched by Layer 2 workflow ID")
+		t.Fatal("Expected task to be fetched by Task workflow ID")
 	}
-	if fetchedL2.TaskID != "test-1" {
-		t.Errorf("Expected TaskID 'test-1', got %s", fetchedL2.TaskID)
+	if fetchedTaskWF.TaskID != "test-1" {
+		t.Errorf("Expected TaskID 'test-1', got %s", fetchedTaskWF.TaskID)
 	}
 
 	all := store.GetAllTasks()

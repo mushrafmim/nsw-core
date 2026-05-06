@@ -61,11 +61,11 @@ func (db *TaskDB) GetTask(taskID string) (store.TaskRecord, bool) {
 	return record, exists
 }
 
-func (db *TaskDB) GetTaskByLayer2WorkflowID(layer2WorkflowID string) (store.TaskRecord, bool) {
+func (db *TaskDB) GetTaskByWorkflowID(workflowID string) (store.TaskRecord, bool) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	for _, record := range db.tasks {
-		if record.Layer2WorkflowID == layer2WorkflowID {
+		if record.TaskWorkflowID == workflowID {
 			return record, true
 		}
 	}

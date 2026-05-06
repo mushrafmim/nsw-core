@@ -81,11 +81,11 @@ func (s *safeMockTaskStore) GetTask(taskID string) (store.TaskRecord, bool) {
 	return r, ok
 }
 
-func (s *safeMockTaskStore) GetTaskByLayer2WorkflowID(layer2WorkflowID string) (store.TaskRecord, bool) {
+func (s *safeMockTaskStore) GetTaskByWorkflowID(workflowID string) (store.TaskRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, r := range s.tasks {
-		if r.Layer2WorkflowID == layer2WorkflowID {
+		if r.TaskWorkflowID == workflowID {
 			return r, true
 		}
 	}
@@ -133,17 +133,17 @@ func writeTempTaskJSON(t *testing.T, content string) (path string, cleanup func(
 func noopCallback(_, _, _ string, _ map[string]any) error { return nil }
 
 // ---------------------------------------------------------------------------
-// Lifecycle integration test (original)
+// Lifecycle integration test
 // ---------------------------------------------------------------------------
 
 func TestTaskManager_Lifecycle(t *testing.T) {
 	storeMock := newSafeMockTaskStore()
 	registry := newTestRegistry()
 
-	layer2Called := false
-	mockL2 := &mockTemporalManager{
+	taskWorkflowCalled := false
+	mockTaskWFManager := &mockTemporalManager{
 		startWorkflowFunc: func(ctx context.Context, workflowID string, def engine.WorkflowDefinition, initialVars map[string]any) error {
-			layer2Called = true
+			taskWorkflowCalled = true
 			if initialVars["_task_id"] == "" {
 				return errors.New("missing task ID in initialVars")
 			}
@@ -151,21 +151,21 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 		},
 	}
 
-	callbackCalled := false
-	onCompleted := func(l1WorkflowID string, l1RunID string, l1NodeID string, finalVars map[string]any) error {
-		callbackCalled = true
+	parentCallbackCalled := false
+	onCompleted := func(parentWorkflowID string, parentRunID string, parentNodeID string, finalVars map[string]any) error {
+		parentCallbackCalled = true
 		return nil
 	}
 
 	path, cleanup := writeTempTaskJSON(t, `{"id": "test_workflow_v1", "nodes": []}`)
 	defer cleanup()
 
-	tm := NewTaskManager(storeMock, registry, mockL2, onCompleted).WithTaskDefPath(path)
+	tm := NewTaskManager(storeMock, registry, mockTaskWFManager, onCompleted).WithTaskDefPath(path)
 
 	// 1. StartTask
 	payload := engine.TaskPayload{
-		WorkflowID:     "l1-workflow",
-		RunID:          "l1-run",
+		WorkflowID:     "parent-workflow",
+		RunID:          "parent-run",
 		NodeID:         "node-1",
 		TaskTemplateID: "test_template",
 		Inputs:         map[string]any{"userform.name": "Alice"},
@@ -174,8 +174,8 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 	if err := tm.StartTask(payload); err != nil {
 		t.Fatalf("StartTask failed: %v", err)
 	}
-	if !layer2Called {
-		t.Error("expected Layer 2 sub-workflow to be started")
+	if !taskWorkflowCalled {
+		t.Error("expected task sub-workflow to be started")
 	}
 
 	tasks := storeMock.GetAllTasks()
@@ -186,18 +186,18 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 	if task.Status != "STARTING" {
 		t.Errorf("expected status 'STARTING', got '%s'", task.Status)
 	}
-	if task.Layer1WorkflowID != "l1-workflow" {
-		t.Errorf("expected L1 workflow 'l1-workflow', got '%s'", task.Layer1WorkflowID)
+	if task.ParentWorkflowID != "parent-workflow" {
+		t.Errorf("expected parent workflow 'parent-workflow', got '%s'", task.ParentWorkflowID)
 	}
 
 	// 2. StartSubTask — generic_user_input
-	payloadL2 := engine.TaskPayload{
-		WorkflowID:     task.Layer2WorkflowID,
-		RunID:          "l2-run",
-		NodeID:         "l2-node",
+	payloadTaskWF := engine.TaskPayload{
+		WorkflowID:     task.TaskWorkflowID,
+		RunID:          "task-run",
+		NodeID:         "task-node",
 		TaskTemplateID: "generic_user_input",
 	}
-	if err := tm.StartSubTask(payloadL2); err != nil {
+	if err := tm.StartSubTask(payloadTaskWF); err != nil {
 		t.Fatalf("StartSubTask failed: %v", err)
 	}
 
@@ -205,19 +205,19 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 	if task.Status != "PENDING_USER" {
 		t.Errorf("expected status 'PENDING_USER', got '%s'", task.Status)
 	}
-	if task.Layer2RunID != "l2-run" {
-		t.Errorf("expected Layer 2 run ID 'l2-run', got '%s'", task.Layer2RunID)
+	if task.TaskRunID != "task-run" {
+		t.Errorf("expected Task run ID 'task-run', got '%s'", task.TaskRunID)
 	}
 
 	// 3. CompleteTaskStep
-	l2TaskDoneCalled := false
-	mockL2.taskDoneFunc = func(ctx context.Context, workflowID string, runID string, activityID string, result map[string]any) error {
-		l2TaskDoneCalled = true
-		if workflowID != task.Layer2WorkflowID {
-			t.Errorf("expected L2 workflow ID %s, got %s", task.Layer2WorkflowID, workflowID)
+	taskDoneCalled := false
+	mockTaskWFManager.taskDoneFunc = func(ctx context.Context, workflowID string, runID string, activityID string, result map[string]any) error {
+		taskDoneCalled = true
+		if workflowID != task.TaskWorkflowID {
+			t.Errorf("expected task workflow ID %s, got %s", task.TaskWorkflowID, workflowID)
 		}
-		if activityID != "l2-node" {
-			t.Errorf("expected active activity ID 'l2-node', got %s", activityID)
+		if activityID != "task-node" {
+			t.Errorf("expected active activity ID 'task-node', got %s", activityID)
 		}
 		return nil
 	}
@@ -231,8 +231,8 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 	if err := tm.CompleteTaskStep(context.Background(), task.TaskID, userData); err != nil {
 		t.Fatalf("CompleteTaskStep failed: %v", err)
 	}
-	if !l2TaskDoneCalled {
-		t.Error("expected Layer 2 TaskDone to be called")
+	if !taskDoneCalled {
+		t.Error("expected TaskDone to be called on task workflow")
 	}
 
 	task, _ = storeMock.GetTask(task.TaskID)
@@ -246,7 +246,7 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 
 	// 4. HandleTaskCompletion
 	finalVars := map[string]any{"reviewerform.review_outcome": "approve"}
-	if err := tm.HandleTaskCompletion(task.Layer2WorkflowID, finalVars); err != nil {
+	if err := tm.HandleTaskCompletion(task.TaskWorkflowID, finalVars); err != nil {
 		t.Fatalf("HandleTaskCompletion failed: %v", err)
 	}
 
@@ -254,7 +254,7 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 	if task.Status != "COMPLETED" {
 		t.Errorf("expected task status 'COMPLETED', got '%s'", task.Status)
 	}
-	if !callbackCalled {
+	if !parentCallbackCalled {
 		t.Error("expected parent wake-up callback to be invoked")
 	}
 }
@@ -267,7 +267,7 @@ func TestStartTask_UnknownTemplateID(t *testing.T) {
 	tm := NewTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
 	err := tm.StartTask(engine.TaskPayload{
-		WorkflowID:     "l1",
+		WorkflowID:     "parent-wf",
 		TaskTemplateID: "does_not_exist",
 	})
 	if err == nil {
@@ -280,7 +280,7 @@ func TestStartTask_MissingTaskDefFile(t *testing.T) {
 		WithTaskDefPath("/tmp/this_file_does_not_exist_xyz.json")
 
 	err := tm.StartTask(engine.TaskPayload{
-		WorkflowID:     "l1",
+		WorkflowID:     "parent-wf",
 		TaskTemplateID: "test_template",
 	})
 	if err == nil {
@@ -296,7 +296,7 @@ func TestStartTask_MalformedTaskDefFile(t *testing.T) {
 		WithTaskDefPath(path)
 
 	err := tm.StartTask(engine.TaskPayload{
-		WorkflowID:     "l1",
+		WorkflowID:     "parent-wf",
 		TaskTemplateID: "test_template",
 	})
 	if err == nil {
@@ -304,8 +304,8 @@ func TestStartTask_MalformedTaskDefFile(t *testing.T) {
 	}
 }
 
-func TestStartTask_Layer2ManagerError(t *testing.T) {
-	mockL2 := &mockTemporalManager{
+func TestStartTask_TaskWorkflowManagerError(t *testing.T) {
+	mockTaskWF := &mockTemporalManager{
 		startWorkflowFunc: func(_ context.Context, _ string, _ engine.WorkflowDefinition, _ map[string]any) error {
 			return errors.New("temporal unavailable")
 		},
@@ -314,15 +314,15 @@ func TestStartTask_Layer2ManagerError(t *testing.T) {
 	path, cleanup := writeTempTaskJSON(t, `{"id":"wf","nodes":[]}`)
 	defer cleanup()
 
-	tm := NewTaskManager(newSafeMockTaskStore(), newTestRegistry(), mockL2, noopCallback).
+	tm := NewTaskManager(newSafeMockTaskStore(), newTestRegistry(), mockTaskWF, noopCallback).
 		WithTaskDefPath(path)
 
 	err := tm.StartTask(engine.TaskPayload{
-		WorkflowID:     "l1",
+		WorkflowID:     "parent-wf",
 		TaskTemplateID: "test_template",
 	})
 	if err == nil {
-		t.Fatal("expected error when layer2 StartWorkflow fails, got nil")
+		t.Fatal("expected error when task StartWorkflow fails, got nil")
 	}
 }
 
@@ -330,7 +330,7 @@ func TestStartTask_Layer2ManagerError(t *testing.T) {
 // StartSubTask — error paths
 // ---------------------------------------------------------------------------
 
-func TestStartSubTask_UnknownLayer2WorkflowID(t *testing.T) {
+func TestStartSubTask_UnknownWorkflowID(t *testing.T) {
 	tm := NewTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
 	err := tm.StartSubTask(engine.TaskPayload{
@@ -338,23 +338,23 @@ func TestStartSubTask_UnknownLayer2WorkflowID(t *testing.T) {
 		TaskTemplateID: "generic_user_input",
 	})
 	if err == nil {
-		t.Fatal("expected error for unknown layer2 workflow ID, got nil")
+		t.Fatal("expected error for unknown workflow ID, got nil")
 	}
 }
 
 func TestStartSubTask_UnknownTaskTemplateID(t *testing.T) {
 	db := newSafeMockTaskStore()
 	db.SaveTask(store.TaskRecord{
-		TaskID:           "task-1",
-		Layer2WorkflowID: "l2-workflow-1",
-		Status:           "STARTING",
-		Data:             map[string]any{},
+		TaskID:         "task-1",
+		TaskWorkflowID: "task-workflow-1",
+		Status:         "STARTING",
+		Data:           map[string]any{},
 	})
 
 	tm := NewTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
 	err := tm.StartSubTask(engine.TaskPayload{
-		WorkflowID:     "l2-workflow-1",
+		WorkflowID:     "task-workflow-1",
 		TaskTemplateID: "not_a_real_template",
 	})
 	if err == nil {
@@ -365,16 +365,16 @@ func TestStartSubTask_UnknownTaskTemplateID(t *testing.T) {
 func TestStartSubTask_ExternalReviewPath(t *testing.T) {
 	db := newSafeMockTaskStore()
 	db.SaveTask(store.TaskRecord{
-		TaskID:           "task-ext",
-		Layer2WorkflowID: "l2-ext-workflow",
-		Status:           "STARTING",
-		Data:             map[string]any{},
+		TaskID:         "task-ext",
+		TaskWorkflowID: "task-ext-workflow",
+		Status:         "STARTING",
+		Data:           map[string]any{},
 	})
 
 	tm := NewTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
 	err := tm.StartSubTask(engine.TaskPayload{
-		WorkflowID:     "l2-ext-workflow",
+		WorkflowID:     "task-ext-workflow",
 		RunID:          "run-1",
 		NodeID:         "node-ext",
 		TaskTemplateID: "generic_external_review",
@@ -434,18 +434,18 @@ func TestHandleTaskCompletion_UnknownWorkflowID_ReturnsNil(t *testing.T) {
 func TestHandleTaskCompletion_CallbackError_TaskStillMarkedCompleted(t *testing.T) {
 	db := newSafeMockTaskStore()
 	db.SaveTask(store.TaskRecord{
-		TaskID:           "task-cb-err",
-		Layer2WorkflowID: "l2-cb-err",
-		Status:           "PENDING_USER",
-		Data:             map[string]any{},
+		TaskID:         "task-cb-err",
+		TaskWorkflowID: "task-cb-workflow",
+		Status:         "PENDING_USER",
+		Data:           map[string]any{},
 	})
 
-	callbackErr := errors.New("layer1 unreachable")
+	callbackErr := errors.New("parent unreachable")
 	tm := NewTaskManager(db, newTestRegistry(), &mockTemporalManager{},
 		func(_, _, _ string, _ map[string]any) error { return callbackErr },
 	)
 
-	err := tm.HandleTaskCompletion("l2-cb-err", map[string]any{})
+	err := tm.HandleTaskCompletion("task-cb-workflow", map[string]any{})
 	if !errors.Is(err, callbackErr) {
 		t.Fatalf("expected callback error to be propagated, got: %v", err)
 	}

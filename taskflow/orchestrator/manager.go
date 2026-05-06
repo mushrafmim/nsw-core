@@ -13,49 +13,90 @@ import (
 	"github.com/google/uuid"
 )
 
-// TaskManager orchestrates the two-layer architecture described in the design doc.
-// It bridges Layer 1 (macro journey) and Layer 2 (micro flow) via a single DB entry per task.
+/*
+Package orchestrator provides a domain-driven TaskManager designed to decouple high-level
+macro journeys from low-level interactive processes.
+
+The system uses a hierarchical, decoupled design:
+
+1. Workflow (Macro Journey):
+   The high-level orchestrating workflow (parent workflow). When the macro journey hits a
+   "Task" node, it executes a callback that calls TaskManager.StartTask().
+
+2. Task (Micro Journey):
+   A self-contained micro-flow executing child tasks (such as document upload, fee payment,
+   or physical inspections). The Task runs as an independent workflow process under the hood
+   (defined by a JSON workflow definition).
+
+3. SubTask (Interaction Steps):
+   Individual, potentially asynchronous execution nodes inside the Task (e.g., waiting for
+   a user form submission, or queuing a request in an external agency portal). These are
+   dispatched via StartSubTask() and resumed via CompleteTaskStep().
+
+Flow Diagram:
+              [Parent Workflow]
+                     │
+                     ▼ (StartTask)
+              [TaskManager] ────► [Task Record created in DB]
+                     │
+                     ▼ (StartTaskWorkflow)
+              [Task Workflow]
+                     │
+                     ▼ (StartSubTask)
+              [SubTask Node] (e.g., PENDING_USER status)
+                     │
+                     ▼ (CompleteTaskStep)
+           [Resume SubTask & Continue]
+                     │
+                     ▼ (TaskWorkflow completed)
+           [HandleTaskCompletion]
+                     │
+                     ▼ (Callback)
+              [Resume Parent Workflow]
+*/
+
+// TaskManager orchestrates decoupled tasks and interactions under parent workflows.
+// It bridges macro-level workflows and micro-level interactive tasks via a single DB entry per task.
 type TaskManager struct {
-	db       store.TaskStore
-	registry *TaskTemplateRegistry
-	// onTaskCompleted is called when a Layer 2 sub-workflow finishes, to resume Layer 1.
-	onTaskCompleted func(layer1WorkflowID string, layer1RunID string, layer1NodeID string, finalVariables map[string]any) error
-	// layer2Manager starts and wakes Layer 2 sub-workflows.
-	layer2Manager engine.TemporalManager
-	// taskDefPath is the path to the Layer 2 workflow definition JSON (default: "task.json").
-	taskDefPath string
+	db                  store.TaskStore
+	registry            *TaskTemplateRegistry
+	onTaskCompleted     func(parentWorkflowID string, parentRunID string, parentNodeID string, finalVariables map[string]any) error
+	taskWorkflowManager engine.TemporalManager
+	taskDefPath         string
 }
 
-// NewTaskManager creates a TaskManager.
+// NewTaskManager creates a TaskManager instance.
 //
-//   - layer2       — the TemporalManager for the Layer 2 queue.
-//   - onTaskCompleted — callback invoked when a Layer 2 workflow completes;
-//     typically calls layer1Manager.TaskDone with the stored parent coordinates.
+//   - db                  — the persistence/in-memory task store.
+//   - registry            — registry holding definitions of task capabilities.
+//   - taskWorkflowManager — the TemporalManager used to start and complete Task sub-workflows.
+//   - onTaskCompleted     — callback invoked when a Task workflow finishes;
+//     typically invokes Parent.TaskDone to resume the parent workflow using stored coordinates.
 func NewTaskManager(
 	db store.TaskStore,
 	registry *TaskTemplateRegistry,
-	layer2 engine.TemporalManager,
-	onTaskCompleted func(layer1WorkflowID string, layer1RunID string, layer1NodeID string, finalVariables map[string]any) error,
+	taskWorkflowManager engine.TemporalManager,
+	onTaskCompleted func(parentWorkflowID string, parentRunID string, parentNodeID string, finalVariables map[string]any) error,
 ) *TaskManager {
 	return &TaskManager{
-		db:              db,
-		registry:        registry,
-		onTaskCompleted: onTaskCompleted,
-		layer2Manager:   layer2,
-		taskDefPath:     "task.json",
+		db:                  db,
+		registry:            registry,
+		onTaskCompleted:     onTaskCompleted,
+		taskWorkflowManager: taskWorkflowManager,
+		taskDefPath:         "task.json",
 	}
 }
 
-// WithTaskDefPath overrides the path to the Layer 2 workflow definition JSON.
-// Useful when running from a directory that isn't the repo root.
+// WithTaskDefPath overrides the path to the Task workflow definition JSON.
+// Useful when running tests or running from an alternate directory.
 func (tm *TaskManager) WithTaskDefPath(path string) *TaskManager {
 	tm.taskDefPath = path
 	return tm
 }
 
-// StartTask is called by the Layer 1 engine when it activates a TASK node.
-// It looks up the template registry, creates the single DB record with Layer 1 parent
-// coordinates, and kicks off the Layer 2 workflow.
+// StartTask is called by the parent workflow engine when it activates a TASK node.
+// It looks up the template registry, creates a single DB record with parent
+// coordinates, and kicks off the Task's internal workflow.
 func (tm *TaskManager) StartTask(payload engine.TaskPayload) error {
 	regEntry, ok := tm.registry.Get(payload.TaskTemplateID)
 	if !ok {
@@ -63,7 +104,7 @@ func (tm *TaskManager) StartTask(payload engine.TaskPayload) error {
 	}
 
 	taskID := "task-" + uuid.New().String()[:8]
-	layer2WorkflowID := "layer2-" + taskID
+	taskWorkflowID := "task-wf-" + taskID
 
 	initialData := make(map[string]any)
 	for k, v := range payload.Inputs {
@@ -77,10 +118,10 @@ func (tm *TaskManager) StartTask(payload engine.TaskPayload) error {
 		UserFormID:       regEntry.UserJsonFormsID,
 		ReviewerFormID:   regEntry.ReviewerJsonFormsID,
 		Status:           "STARTING",
-		Layer1WorkflowID: payload.WorkflowID,
-		Layer1RunID:      payload.RunID,
-		Layer1NodeID:     payload.NodeID,
-		Layer2WorkflowID: layer2WorkflowID,
+		ParentWorkflowID: payload.WorkflowID,
+		ParentRunID:      payload.RunID,
+		ParentNodeID:     payload.NodeID,
+		TaskWorkflowID:   taskWorkflowID,
 		Data:             initialData,
 		CreatedAt:        time.Now(),
 	}
@@ -96,23 +137,23 @@ func (tm *TaskManager) StartTask(payload engine.TaskPayload) error {
 		return fmt.Errorf("failed to parse %s: %v", tm.taskDefPath, err)
 	}
 
-	err = tm.layer2Manager.StartWorkflow(context.Background(), layer2WorkflowID, def, initialData)
+	err = tm.taskWorkflowManager.StartWorkflow(context.Background(), taskWorkflowID, def, initialData)
 	if err != nil {
-		return fmt.Errorf("failed to start Layer 2 workflow: %v", err)
+		return fmt.Errorf("failed to start task workflow: %v", err)
 	}
-	log.Printf("[TaskManager] Started Layer 2 workflow %s for task %s", layer2WorkflowID, taskID)
+	log.Printf("[TaskManager] Started task workflow %s for task %s", taskWorkflowID, taskID)
 	return nil
 }
 
-// StartSubTask is called by the Layer 2 engine when it activates a TASK node inside the sub-workflow.
+// StartSubTask is called by the Task's workflow engine when it activates an interaction step.
 // It routes to the correct capability handler based on task_template_id.
 func (tm *TaskManager) StartSubTask(payload engine.TaskPayload) error {
-	record, exists := tm.db.GetTaskByLayer2WorkflowID(payload.WorkflowID)
+	record, exists := tm.db.GetTaskByWorkflowID(payload.WorkflowID)
 	if !exists {
-		return fmt.Errorf("[StartSubTask] no task record found for Layer 2 workflow %s", payload.WorkflowID)
+		return fmt.Errorf("[StartSubTask] no task record found for workflow %s", payload.WorkflowID)
 	}
 
-	record.Layer2RunID = payload.RunID
+	record.TaskRunID = payload.RunID
 	record.ActiveActivityID = payload.NodeID
 
 	for k, v := range payload.Inputs {
@@ -126,32 +167,32 @@ func (tm *TaskManager) StartSubTask(payload engine.TaskPayload) error {
 
 	case "generic_external_review":
 		record.Status = "QUEUED_EXTERNALLY"
-		// In a real implementation, call the external API here before returning.
+		// In a real implementation, dispatch external API requests here.
 		log.Printf("[TaskManager] Task %s dispatched to external reviewer at node %s", record.TaskID, payload.NodeID)
 
 	default:
-		return fmt.Errorf("unknown Layer 2 task_template_id: %s", payload.TaskTemplateID)
+		return fmt.Errorf("unknown task_template_id inside Task workflow: %s", payload.TaskTemplateID)
 	}
 
 	tm.db.SaveTask(record)
 	return nil
 }
 
-// HandleTaskCompletion is called when a Layer 2 workflow (representing a Task) hits its END node.
-// It marks the task complete and fires the onTaskCompleted callback to resume Layer 1.
+// HandleTaskCompletion is called when a Task workflow hits its END node.
+// It marks the task complete and fires the onTaskCompleted callback to resume the parent workflow.
 func (tm *TaskManager) HandleTaskCompletion(workflowID string, finalVariables map[string]any) error {
-	record, exists := tm.db.GetTaskByLayer2WorkflowID(workflowID)
+	record, exists := tm.db.GetTaskByWorkflowID(workflowID)
 	if !exists {
-		// Not a Layer 2 workflow we own — safe to ignore.
+		// Not a workflow we own — safe to ignore.
 		return nil
 	}
 
-	log.Printf("[TaskManager] Layer 2 workflow %s completed for task %s", workflowID, record.TaskID)
+	log.Printf("[TaskManager] Task workflow %s completed for task %s", workflowID, record.TaskID)
 
 	record.Status = "COMPLETED"
 	tm.db.SaveTask(record)
 
-	err := tm.onTaskCompleted(record.Layer1WorkflowID, record.Layer1RunID, record.Layer1NodeID, finalVariables)
+	err := tm.onTaskCompleted(record.ParentWorkflowID, record.ParentRunID, record.ParentNodeID, finalVariables)
 	if err != nil {
 		log.Printf("[TaskManager] Failed to execute task completion callback for %s: %v", record.TaskID, err)
 		return err
@@ -172,7 +213,7 @@ func (tm *TaskManager) GetAllTasks() []store.TaskRecord {
 }
 
 // CompleteTaskStep is the public API for external clients or portals to submit form/interaction
-// data and resume the active step in the corresponding Layer 2 sub-workflow.
+// data and resume the active step in the corresponding Task workflow.
 func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payload map[string]any) error {
 	record, exists := tm.db.GetTask(taskID)
 	if !exists {
@@ -192,18 +233,18 @@ func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payl
 	}
 	tm.db.SaveTask(record)
 
-	log.Printf("[TaskManager] Waking Layer 2 activity %s in workflow %s (task %s)",
-		record.ActiveActivityID, record.Layer2WorkflowID, taskID)
+	log.Printf("[TaskManager] Waking active activity %s in workflow %s (task %s)",
+		record.ActiveActivityID, record.TaskWorkflowID, taskID)
 
-	err := tm.layer2Manager.TaskDone(
+	err := tm.taskWorkflowManager.TaskDone(
 		ctx,
-		record.Layer2WorkflowID,
-		record.Layer2RunID,
+		record.TaskWorkflowID,
+		record.TaskRunID,
 		record.ActiveActivityID,
 		record.Data, // pass full namespaced state back to the workflow
 	)
 	if err != nil {
-		return fmt.Errorf("failed to resume Layer 2 workflow: %w", err)
+		return fmt.Errorf("failed to resume task workflow: %w", err)
 	}
 
 	return nil
@@ -214,9 +255,9 @@ func (tm *TaskManager) GetDB() store.TaskStore {
 	return tm.db
 }
 
-// GetLayer2Manager returns the Layer 2 TemporalManager.
-func (tm *TaskManager) GetLayer2Manager() engine.TemporalManager {
-	return tm.layer2Manager
+// GetTaskWorkflowManager returns the Task's TemporalManager.
+func (tm *TaskManager) GetTaskWorkflowManager() engine.TemporalManager {
+	return tm.taskWorkflowManager
 }
 
 // setNestedKey sets a value in a map using a dot-separated path.
