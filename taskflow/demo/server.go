@@ -59,15 +59,15 @@ func (s *server) handleStartWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
 
-	fileBytes, err := os.ReadFile("demo/workflow.json")
+	fileBytes, err := os.ReadFile("demo/templates/graphs/workflow_phyto_journey.json")
 	if err != nil {
-		http.Error(w, "Failed to read demo/workflow.json", http.StatusInternalServerError)
+		http.Error(w, "Failed to read demo/templates/graphs/workflow_phyto_journey.json", http.StatusInternalServerError)
 		return
 	}
 
 	var def engine.WorkflowDefinition
 	if err := json.Unmarshal(fileBytes, &def); err != nil {
-		http.Error(w, "Failed to parse demo/workflow.json", http.StatusInternalServerError)
+		http.Error(w, "Failed to parse demo/templates/graphs/workflow_phyto_journey.json", http.StatusInternalServerError)
 		return
 	}
 

@@ -7,7 +7,7 @@
     {
       "id": "phase1_app",
       "type": "TASK",
-      "task_template_id": "phyto_application_task",
+      "task_template_id": "demo_phyto_application_task",
       "input_mapping": {
         "applicant_name": "userform.applicant_name"
       },
