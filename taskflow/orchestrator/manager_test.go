@@ -244,10 +244,10 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 		t.Errorf("expected userform.email 'alice@example.com', got '%v'", userform["email"])
 	}
 
-	// 4. HandleLayer2Completion
+	// 4. HandleTaskCompletion
 	finalVars := map[string]any{"reviewerform.review_outcome": "approve"}
-	if err := tm.HandleLayer2Completion(task.Layer2WorkflowID, finalVars); err != nil {
-		t.Fatalf("HandleLayer2Completion failed: %v", err)
+	if err := tm.HandleTaskCompletion(task.Layer2WorkflowID, finalVars); err != nil {
+		t.Fatalf("HandleTaskCompletion failed: %v", err)
 	}
 
 	task, _ = storeMock.GetTask(task.TaskID)
@@ -419,19 +419,19 @@ func TestCompleteTaskStep_AlreadyCompleted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// HandleLayer2Completion — edge cases
+// HandleTaskCompletion — edge cases
 // ---------------------------------------------------------------------------
 
-func TestHandleLayer2Completion_UnknownWorkflowID_ReturnsNil(t *testing.T) {
+func TestHandleTaskCompletion_UnknownWorkflowID_ReturnsNil(t *testing.T) {
 	tm := NewTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
-	err := tm.HandleLayer2Completion("unknown-workflow", map[string]any{"k": "v"})
+	err := tm.HandleTaskCompletion("unknown-workflow", map[string]any{"k": "v"})
 	if err != nil {
 		t.Fatalf("expected nil for unknown workflow, got: %v", err)
 	}
 }
 
-func TestHandleLayer2Completion_CallbackError_TaskStillMarkedCompleted(t *testing.T) {
+func TestHandleTaskCompletion_CallbackError_TaskStillMarkedCompleted(t *testing.T) {
 	db := newSafeMockTaskStore()
 	db.SaveTask(store.TaskRecord{
 		TaskID:           "task-cb-err",
@@ -445,7 +445,7 @@ func TestHandleLayer2Completion_CallbackError_TaskStillMarkedCompleted(t *testin
 		func(_, _, _ string, _ map[string]any) error { return callbackErr },
 	)
 
-	err := tm.HandleLayer2Completion("l2-cb-err", map[string]any{})
+	err := tm.HandleTaskCompletion("l2-cb-err", map[string]any{})
 	if !errors.Is(err, callbackErr) {
 		t.Fatalf("expected callback error to be propagated, got: %v", err)
 	}

@@ -74,7 +74,7 @@ func main() {
 	layer2CompletionHandler := func(workflowID string, finalVariables map[string]any) error {
 		log.Printf("\n[Layer 2] Workflow %s completed. Final state: %v\n", workflowID, finalVariables)
 		if tm != nil {
-			return tm.HandleLayer2Completion(workflowID, finalVariables)
+			return tm.HandleTaskCompletion(workflowID, finalVariables)
 		}
 		return nil
 	}

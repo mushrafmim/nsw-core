@@ -137,9 +137,9 @@ func (tm *TaskManager) StartSubTask(payload engine.TaskPayload) error {
 	return nil
 }
 
-// HandleLayer2Completion is called when a Layer 2 workflow hits its END node.
+// HandleTaskCompletion is called when a Layer 2 workflow (representing a Task) hits its END node.
 // It marks the task complete and fires the onTaskCompleted callback to resume Layer 1.
-func (tm *TaskManager) HandleLayer2Completion(workflowID string, finalVariables map[string]any) error {
+func (tm *TaskManager) HandleTaskCompletion(workflowID string, finalVariables map[string]any) error {
 	record, exists := tm.db.GetTaskByLayer2WorkflowID(workflowID)
 	if !exists {
 		// Not a Layer 2 workflow we own — safe to ignore.
