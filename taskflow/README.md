@@ -23,7 +23,7 @@ The engine is built on a clean, decoupled hierarchy to completely separate high-
               [Task Workflow]    (Micro Interactive Journey)
                      │
                      ▼ (StartSubTask)
-              [SubTask Node]     (e.g., PENDING_USER Status)
+              [SubTask Node]     (Dispatched dynamically via Plugin Registry)
                      │
                      ▼ (CompleteTaskStep)
            [Resume SubTask & Continue]
@@ -40,8 +40,8 @@ The engine is built on a clean, decoupled hierarchy to completely separate high-
    The high-level orchestrating workflow. It describes the top-level process (e.g., importing goods, getting phytosanitary approval). It has no awareness of individual UI forms or low-level review states.
 2. **Task Workflow (Micro Journey / Micro-Flow)**:
    A self-contained sub-process representing a concrete block of work (e.g., Application Form Submission, Inspection evaluation). Tasks run as independent Temporal workflows under the hood.
-3. **SubTask (Interaction Step)**:
-   Individual steps inside a Task's workflow definition. It may pause asynchronously waiting for human interactions (like a user filling a form) or external APIs (like a payment gateway or third-party agency review).
+3. **Task execution Plugins (Open-Closed Principle)**:
+   Interaction steps inside the Task are processed using a pluggable strategy pattern. Each step resolves its execution rules through `plugins.Registry` using a composite key: `(TaskType, PluginName)`. This completely decouples core orchestration from individual plugin schemas (e.g. form schemas, payment endpoints).
 4. **Unified DB Record (`TaskRecord`)**:
    Correlates the parent coordinate IDs, active task execution coordinates, form configuration IDs, and the namespaced payload data into a single, transactional record.
 
@@ -54,6 +54,10 @@ The engine is built on a clean, decoupled hierarchy to completely separate high-
 │   ├── manager.go         # TaskManager - starts tasks, manages sub-tasks, completes steps
 │   ├── manager_test.go    # Comprehensive unit and lifecycle test coverage
 │   └── registry.go        # Registry of task template definitions (schemas, task types)
+├── plugins/               # Pluggable step-execution handlers (public package)
+│   ├── plugin.go          # Registry definition and task execution interfaces
+│   ├── user_input.go      # generic_user_input plugin: decodes user form ID from config properties
+│   └── external_review.go # generic_external_review plugin: dispatches review states to external systems
 ├── store/                 # Storage abstraction & domain models (public package)
 │   ├── db.go              # TaskStore interface and TaskRecord struct
 │   └── db_test.go         # Store verification test suite
@@ -63,6 +67,7 @@ The engine is built on a clean, decoupled hierarchy to completely separate high-
 │   ├── db.go              # Simple file-backed, in-memory implementation of TaskStore
 │   ├── task.json          # Micro-flow workflow definition (User Form -> External Review)
 │   ├── workflow.json      # Macro-flow workflow definition
+│   ├── templates/         # JSON Step Config files (generic_user_input, generic_external_review)
 │   └── static/            # Demo web UI (split-panel portal view & forms)
 ```
 
@@ -89,9 +94,13 @@ In a separate terminal window, start the demo:
 go run ./demo
 ```
 This command:
-1. Registers the Task Templates.
-2. Boots the Layer 1 (Parent) and Layer 2 (Task) Temporal workers.
-3. Spins up a web server on [http://localhost:8080](http://localhost:8080).
+1. Registers the Task Templates from `./demo/templates/`.
+2. Registers default task capability plugins (Human Form Submission, External Agency Dispatch) scoped to the `"APPLICATION"` task category.
+3. Boots the Parent and Task Temporal workers.
+4. Spins up a web server on [http://localhost:8080](http://localhost:8080).
+
+> [!NOTE]
+> The demo registers a **local mock dispatcher** for the external agency step. It prints a formatted message to console instead of sending network requests, ensuring the reviewer dashboard runs flawlessly with zero ports setup!
 
 ### 3. Open the Demo UI
 Go to [http://localhost:8080](http://localhost:8080) in your web browser. 
@@ -109,6 +118,7 @@ import (
 	"context"
 	
 	"github.com/OpenNSW/nsw-task-flow/orchestrator"
+	"github.com/OpenNSW/nsw-task-flow/plugins"
 	"github.com/OpenNSW/nsw-task-flow/store"
 	engine "github.com/OpenNSW/go-temporal-workflow"
 )
@@ -116,26 +126,31 @@ import (
 // 1. Initialize your Database Store
 var db store.TaskStore = myDBImpl
 
-// 2. Define a Task Registry
+// 2. Define a Task Templates Registry
 registry := orchestrator.NewTaskTemplateRegistry()
 registry.Register(orchestrator.TaskTemplateEntry{
-	TemplateID:          "phytosanitary_task",
-	TaskType:            "APPLICATION",
-	WorkflowID:          "phyto_task_v1", // The Task Workflow JSON file ID
-	UserJsonFormsID:     "phyto_form",
-	ReviewerJsonFormsID: "reviewer_form",
+	TemplateID:       "phyto_user_submission",
+	TaskType:         "APPLICATION",
+	WorkflowID:       "phyto_task_v1",
+	PluginName:       "generic_user_input",
+	PluginProperties: []byte(`{"user_jsonforms_id": "phyto_user_form_v1"}`),
 })
 
-// 3. Define the Callback to Wake up the Parent Workflow
+// 3. Initialize and Register Strategy Plugins
+pluginsRegistry := plugins.NewRegistry()
+pluginsRegistry.Register("APPLICATION", plugins.NewUserInputPlugin())
+pluginsRegistry.Register("APPLICATION", plugins.NewExternalReviewPlugin(nil))
+
+// 4. Define the Callback to Wake up the Parent Workflow
 onTaskCompleted := func(parentWorkflowID string, parentRunID string, parentNodeID string, finalVariables map[string]any) error {
 	return parentWorkflowManager.TaskDone(context.Background(), parentWorkflowID, parentRunID, parentNodeID, finalVariables)
 }
 
-// 4. Initialize the TaskManager
-tm := orchestrator.NewTaskManager(db, registry, taskWorkflowManager, onTaskCompleted).
+// 5. Initialize the TaskManager
+tm := orchestrator.NewTaskManager(db, registry, pluginsRegistry, taskWorkflowManager, onTaskCompleted).
 	WithTaskDefPath("path/to/task.json")
 
-// 5. Connect TaskManager in your Temporal handlers
+// 6. Connect TaskManager in your Temporal handlers
 // When parent workflow triggers a task node:
 parentTaskHandler := func(payload engine.TaskPayload) error {
 	return tm.StartTask(payload)
