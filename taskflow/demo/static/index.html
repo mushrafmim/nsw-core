@@ -499,6 +499,23 @@
             top: 10px;
             transform: none;
         }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); opacity: 0.5; }
+            50% { transform: scale(1.15); opacity: 1; }
+            100% { transform: scale(0.95); opacity: 0.5; }
+        }
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 1.8s infinite ease-in-out;
+        }
+        .dot-warning { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+        .dot-purple { background: #9f7aea; box-shadow: 0 0 8px #9f7aea; }
+        .dot-cyan { background: var(--primary); box-shadow: 0 0 8px var(--primary); }
+        .dot-done { background: var(--success); box-shadow: 0 0 8px var(--success); }
     </style>
 </head>
 
@@ -629,7 +646,7 @@
             const reviewerCol = document.getElementById('reviewerCol');
             const historyCol = document.getElementById('historyCol');
 
-            const pending = tasks.filter(t => t.status === 'PENDING_USER' || t.status === 'PENDING_PAYMENT');
+            const pending = tasks.filter(t => t.status === 'PENDING_USER' || t.status === 'PENDING_PAYMENT' || t.status === 'QUEUED_EXTERNALLY' || t.status === 'WAITING_FOR_EVENT');
             const queued = tasks.filter(t => t.status === 'QUEUED_EXTERNALLY' || t.status === 'WAITING_FOR_EVENT');
             const completed = tasks.filter(t => t.status === 'COMPLETED' || t.status === 'DISPATCHED');
 
@@ -650,6 +667,91 @@
 
             const card = document.createElement('div');
             card.className = 'task-card';
+
+            if (task.status === 'QUEUED_EXTERNALLY' || task.status === 'WAITING_FOR_EVENT') {
+                const nodeID = task.subtask_node_id || '';
+                let title = "Application Processing";
+                let badgeText = "Under Review";
+                let badgeStyle = "background:rgba(210,153,34,0.1); color:var(--warning); border-color:rgba(210,153,34,0.25)";
+                let desc = "The system is performing automated and manual assessment steps.";
+                let statusClass = "dot-warning";
+
+                if (nodeID.includes('officer_review') || nodeID.includes('n1_apply') || nodeID.includes('1-application')) {
+                    title = "Application Officer Review";
+                    badgeText = "Under Assessment";
+                    badgeStyle = "background:rgba(210,153,34,0.12); color:#ddac22; border-color:rgba(210,153,34,0.3)";
+                    desc = "Your application has been safely received and is being verified by a National Single Window quarantine officer.";
+                    statusClass = "dot-warning";
+                } else if (nodeID.includes('sample') || nodeID.includes('wait_sample') || nodeID.includes('2-wait_on_sample')) {
+                    title = "Consignment Sample Delivery";
+                    badgeText = "Awaiting Sample";
+                    badgeStyle = "background:rgba(159,122,234,0.12); color:#9f7aea; border-color:rgba(159,122,234,0.3)";
+                    desc = "Please dispatch the required physical sample of your consignment to the agricultural quarantine laboratory. Once received, testing will start automatically.";
+                    statusClass = "dot-purple";
+                } else if (nodeID.includes('lab') || nodeID.includes('wait_lab') || nodeID.includes('3-wait_on_lab_results')) {
+                    title = "Phytosanitary Lab Testing";
+                    badgeText = "Lab Testing";
+                    badgeStyle = "background:rgba(56,139,253,0.12); color:var(--primary); border-color:rgba(56,139,253,0.3)";
+                    desc = "Laboratory testing is actively in progress. Analysts are verifying the sample is clear of prohibited quarantine pathogens, pests, and chemical residues.";
+                    statusClass = "dot-cyan";
+                } else if (nodeID.includes('fumigation') || nodeID.includes('wait_fumigation') || nodeID.includes('4-wait_on_fumigation_decision')) {
+                    title = "Quarantine Fumigation Log";
+                    badgeText = "Fumigation Req";
+                    badgeStyle = "background:rgba(210,153,34,0.12); color:var(--warning); border-color:rgba(210,153,34,0.3)";
+                    desc = "Your consignment requires methyl bromide chemical fumigation. Waiting for treatment operators to submit completed dosage logs.";
+                    statusClass = "dot-warning";
+                } else if (nodeID.includes('visual_decision') || nodeID.includes('visual-requirement') || nodeID.includes('visual_requirement') || nodeID.includes('5-check-visual-inspection-requirement')) {
+                    title = "Inspection Requirement Decision";
+                    badgeText = "Risk Checking";
+                    badgeStyle = "background:rgba(56,139,253,0.12); color:var(--cyan); border-color:rgba(56,139,253,0.3)";
+                    desc = "Authorized officers are running a risk-profile assessment to determine if physical farm crop visual inspection is required.";
+                    statusClass = "dot-cyan";
+                } else if (nodeID.includes('visual') || nodeID.includes('wait_visual') || nodeID.includes('6-visual-inspection-result')) {
+                    title = "Visual Field Inspection";
+                    badgeText = "Officer Dispatched";
+                    badgeStyle = "background:rgba(0,186,180,0.12); color:#00bab4; border-color:rgba(0,186,180,0.3)";
+                    desc = "An inspection officer is dispatched to perform physical visual assessment of the agricultural consignment.";
+                    statusClass = "dot-cyan";
+                } else if (nodeID.includes('docs_apply') || nodeID.includes('shipping-docs') || nodeID.includes('7-submit-shipping-docs')) {
+                    title = "Shipping Documents Audit";
+                    badgeText = "Auditing Documents";
+                    badgeStyle = "background:rgba(56,139,253,0.12); color:var(--cyan); border-color:rgba(56,139,253,0.3)";
+                    desc = "A verification specialist is reviewing your uploaded Bill of Lading, Packing List, and Commercial Invoice for international compliance.";
+                    statusClass = "dot-cyan";
+                } else if (nodeID.includes('issue-certificate') || nodeID.includes('issue_certificate') || nodeID.includes('9-issue-certificate')) {
+                    title = "Certificate Issuance";
+                    badgeText = "Generating";
+                    badgeStyle = "background:rgba(63,185,80,0.12); color:var(--success); border-color:rgba(63,185,80,0.3)";
+                    desc = "All quarantine clearances have passed and payments have cleared. Your Phytosanitary Certificate is being signed and registered on the IPPC hub.";
+                    statusClass = "dot-done";
+                }
+
+                card.innerHTML = `
+        <div class="card-top" style="background:rgba(255,255,255,0.015);">
+            <div>
+                <div class="card-title" style="color:var(--text-secondary); display:flex; align-items:center; gap:0.4rem;">
+                    <span>🔒</span> ${title}
+                </div>
+                <div class="card-sub">${tid} · node: ${nodeID}</div>
+            </div>
+            <span class="badge" style="${badgeStyle}">${badgeText}</span>
+        </div>
+        <div class="card-body">
+            <div class="locked-notice" style="background:rgba(255,255,255,0.02); border:1px dashed var(--border); border-radius:8px; padding:0.8rem; font-size:0.85rem; color:var(--text-secondary); display:flex; flex-direction:column; gap:0.6rem;">
+                <div style="display:flex; align-items:center; gap:0.5rem; font-weight:600; color:var(--text-primary)">
+                    <span class="status-dot ${statusClass}"></span>
+                    <span>Waiting for External Action</span>
+                </div>
+                <p style="margin:0; line-height:1.4;">${desc}</p>
+            </div>
+            <div class="consignment-snapshot" style="margin-top:0.6rem; font-size:0.82rem; background:rgba(255,255,255,0.01); border:1px solid var(--border); border-radius:6px; padding:0.6rem; display:flex; flex-direction:column; gap:0.25rem;">
+                <div>Exporter: <b>${uf.exporter_name || uf.applicant_name || 'Sunrise Orchards'}</b></div>
+                <div>Commodity: <b>${uf.commodity || uf.crop_type || 'Apples'}</b></div>
+                <div>Reference No: <b>${rf.reference_number || d.reference_number || '—'}</b></div>
+            </div>
+        </div>`;
+                return card;
+            }
 
             if (task.status === 'PENDING_PAYMENT') {
                 card.innerHTML = `
