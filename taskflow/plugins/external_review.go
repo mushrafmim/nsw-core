@@ -94,7 +94,7 @@ func (p *ExternalReviewPlugin) Execute(ctx PluginContext, configRaw json.RawMess
 	}
 
 	log.Printf("[Plugin: generic_external_review] Successfully dispatched task %s (active step: %s, form: %s)", ctx.Record.TaskID, ctx.Record.SubTaskNodeID, ctx.Record.ReviewerFormID)
-	return nil
+	return ErrSuspended
 }
 
 func (p *ExternalReviewPlugin) Render(configRaw json.RawMessage, record store.TaskRecord, getTemplate TemplateRetriever) (map[string]any, error) {

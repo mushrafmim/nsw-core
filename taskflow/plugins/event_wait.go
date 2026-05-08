@@ -61,5 +61,5 @@ func (p *EventWaitPlugin) Execute(ctx PluginContext, configRaw json.RawMessage) 
 	}
 
 	log.Printf("[Plugin: register_task_and_wait] Successfully queued task %s (active step: %s, external task type: %s)", ctx.Record.TaskID, ctx.Record.SubTaskNodeID, cfg.TaskType)
-	return nil
+	return ErrSuspended
 }

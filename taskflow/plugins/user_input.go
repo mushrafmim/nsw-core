@@ -41,7 +41,7 @@ func (p *UserInputPlugin) Execute(ctx PluginContext, configRaw json.RawMessage) 
 
 	ctx.Record.Status = status
 	log.Printf("[Plugin: generic_user_input] Task %s waiting for user interaction (form: %s) at node %s", ctx.Record.TaskID, ctx.Record.UserFormID, ctx.Record.SubTaskNodeID)
-	return nil
+	return ErrSuspended
 }
 
 func (p *UserInputPlugin) Render(configRaw json.RawMessage, record store.TaskRecord, getTemplate TemplateRetriever) (map[string]any, error) {

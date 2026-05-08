@@ -10,6 +10,7 @@ import (
 	engine "github.com/OpenNSW/go-temporal-workflow"
 	"github.com/OpenNSW/nsw-task-flow/plugins"
 	"github.com/OpenNSW/nsw-task-flow/store"
+	"go.temporal.io/sdk/activity"
 )
 
 // ---------------------------------------------------------------------------
@@ -203,7 +204,7 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 		Inputs:         map[string]any{"userform.name": "Alice"},
 	}
 
-	if err := tm.StartTask(payload); err != nil {
+	if _, err := tm.StartTask(payload); err != nil && !errors.Is(err, activity.ErrResultPending) {
 		t.Fatalf("StartTask failed: %v", err)
 	}
 	if !taskWorkflowCalled {
@@ -229,7 +230,7 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 		NodeID:         "task-node",
 		TaskTemplateID: "generic_user_input",
 	}
-	if err := tm.StartSubTask(payloadTaskWF); err != nil {
+	if _, err := tm.StartSubTask(payloadTaskWF); err != nil && !errors.Is(err, activity.ErrResultPending) {
 		t.Fatalf("StartSubTask failed: %v", err)
 	}
 
@@ -298,7 +299,7 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 func TestStartTask_UnknownTemplateID(t *testing.T) {
 	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
-	err := tm.StartTask(engine.TaskPayload{
+	_, err := tm.StartTask(engine.TaskPayload{
 		WorkflowID:     "parent-wf",
 		TaskTemplateID: "does_not_exist",
 	})
@@ -311,7 +312,7 @@ func TestStartTask_MissingTaskDefFile(t *testing.T) {
 	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback).
 		WithTaskDefPath("/tmp/this_file_does_not_exist_xyz.json")
 
-	err := tm.StartTask(engine.TaskPayload{
+	_, err := tm.StartTask(engine.TaskPayload{
 		WorkflowID:     "parent-wf",
 		TaskTemplateID: "test_template",
 	})
@@ -327,7 +328,7 @@ func TestStartTask_MalformedTaskDefFile(t *testing.T) {
 	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback).
 		WithTaskDefPath(path)
 
-	err := tm.StartTask(engine.TaskPayload{
+	_, err := tm.StartTask(engine.TaskPayload{
 		WorkflowID:     "parent-wf",
 		TaskTemplateID: "test_template",
 	})
@@ -349,7 +350,7 @@ func TestStartTask_TaskWorkflowManagerError(t *testing.T) {
 	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), mockTaskWF, noopCallback).
 		WithTaskDefPath(path)
 
-	err := tm.StartTask(engine.TaskPayload{
+	_, err := tm.StartTask(engine.TaskPayload{
 		WorkflowID:     "parent-wf",
 		TaskTemplateID: "test_template",
 	})
@@ -365,7 +366,7 @@ func TestStartTask_TaskWorkflowManagerError(t *testing.T) {
 func TestStartSubTask_UnknownWorkflowID(t *testing.T) {
 	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
-	err := tm.StartSubTask(engine.TaskPayload{
+	_, err := tm.StartSubTask(engine.TaskPayload{
 		WorkflowID:     "workflow-that-was-never-registered",
 		TaskTemplateID: "generic_user_input",
 	})
@@ -385,7 +386,7 @@ func TestStartSubTask_UnknownTaskTemplateID(t *testing.T) {
 
 	tm := newTestTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
-	err := tm.StartSubTask(engine.TaskPayload{
+	_, err := tm.StartSubTask(engine.TaskPayload{
 		WorkflowID:     "task-workflow-1",
 		TaskTemplateID: "not_a_real_template",
 	})
@@ -405,13 +406,13 @@ func TestStartSubTask_ExternalReviewPath(t *testing.T) {
 
 	tm := newTestTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
-	err := tm.StartSubTask(engine.TaskPayload{
+	_, err := tm.StartSubTask(engine.TaskPayload{
 		WorkflowID:     "task-ext-workflow",
 		RunID:          "run-1",
 		NodeID:         "node-ext",
 		TaskTemplateID: "generic_external_review",
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, activity.ErrResultPending) {
 		t.Fatalf("StartSubTask for generic_external_review failed: %v", err)
 	}
 

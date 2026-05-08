@@ -51,5 +51,5 @@ func (p *PaymentPlugin) Execute(ctx PluginContext, configRaw json.RawMessage) er
 	}
 
 	log.Printf("[Plugin: generic_payment] Successfully dispatched payment step for task %s (active step: %s)", ctx.Record.TaskID, ctx.Record.SubTaskNodeID)
-	return nil
+	return ErrSuspended
 }

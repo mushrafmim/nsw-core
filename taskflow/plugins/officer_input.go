@@ -41,7 +41,7 @@ func (p *OfficerInputPlugin) Execute(ctx PluginContext, configRaw json.RawMessag
 
 	ctx.Record.Status = status
 	log.Printf("[Plugin: generic_officer_input] Task %s waiting for officer interaction (form: %s) at node %s", ctx.Record.TaskID, ctx.Record.ReviewerFormID, ctx.Record.SubTaskNodeID)
-	return nil
+	return ErrSuspended
 }
 
 func (p *OfficerInputPlugin) Render(configRaw json.RawMessage, record store.TaskRecord, getTemplate TemplateRetriever) (map[string]any, error) {

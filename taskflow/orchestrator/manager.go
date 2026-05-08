@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/OpenNSW/nsw-task-flow/plugins"
 	"github.com/OpenNSW/nsw-task-flow/store"
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/activity"
 )
 
 /*
@@ -106,7 +108,7 @@ func (tm *TaskManager) WithTaskDefPath(path string) *TaskManager {
 // StartTask is called by the parent workflow engine when it activates a TASK node.
 // It looks up the template registry, creates a single DB record with parent
 // coordinates, and kicks off the Task's internal workflow.
-func (tm *TaskManager) StartTask(payload engine.TaskPayload) error {
+func (tm *TaskManager) StartTask(payload engine.TaskPayload) (map[string]any, error) {
 	var def engine.WorkflowDefinition
 	var regEntry TaskTemplateEntry
 
@@ -121,16 +123,16 @@ func (tm *TaskManager) StartTask(payload engine.TaskPayload) error {
 		var ok bool
 		regEntry, ok = tm.registry.Get(payload.TaskTemplateID)
 		if !ok {
-			return fmt.Errorf("unknown task_template_id: %s (neither registered as sub-workflow nor task template)", payload.TaskTemplateID)
+			return nil, fmt.Errorf("unknown task_template_id: %s (neither registered as sub-workflow nor task template)", payload.TaskTemplateID)
 		}
 
 		// Fallback to reading the default static task definition file (backward compatibility)
 		fileBytes, err := os.ReadFile(tm.taskDefPath)
 		if err != nil {
-			return fmt.Errorf("failed to read task def file %s: %v", tm.taskDefPath, err)
+			return nil, fmt.Errorf("failed to read task def file %s: %v", tm.taskDefPath, err)
 		}
 		if err := json.Unmarshal(fileBytes, &def); err != nil {
-			return fmt.Errorf("failed to parse task def file %s: %v", tm.taskDefPath, err)
+			return nil, fmt.Errorf("failed to parse task def file %s: %v", tm.taskDefPath, err)
 		}
 	}
 
@@ -161,24 +163,24 @@ func (tm *TaskManager) StartTask(payload engine.TaskPayload) error {
 	for _, node := range def.Nodes {
 		if node.Type == engine.NodeTypeGateway &&
 			(node.GatewayType == engine.GatewayTypeParallelSplit || node.GatewayType == "INCLUSIVE_SPLIT") {
-			return fmt.Errorf("parallel subtasks are not supported: task workflow %s contains parallel gateway %s (%s)", def.ID, node.ID, node.GatewayType)
+			return nil, fmt.Errorf("parallel subtasks are not supported: task workflow %s contains parallel gateway %s (%s)", def.ID, node.ID, node.GatewayType)
 		}
 	}
 
 	err := tm.taskWorkflowManager.StartWorkflow(context.Background(), taskWorkflowID, def, initialData)
 	if err != nil {
-		return fmt.Errorf("failed to start task workflow: %v", err)
+		return nil, fmt.Errorf("failed to start task workflow: %v", err)
 	}
 	log.Printf("[TaskManager] Started task workflow %s for task %s", taskWorkflowID, taskID)
-	return nil
+	return nil, activity.ErrResultPending
 }
 
 // StartSubTask is called by the Task's workflow engine when it activates an interaction step.
 // It routes to the correct capability handler dynamically from the plugin registry.
-func (tm *TaskManager) StartSubTask(payload engine.TaskPayload) error {
+func (tm *TaskManager) StartSubTask(payload engine.TaskPayload) (map[string]any, error) {
 	record, exists := tm.db.GetTaskByWorkflowID(payload.WorkflowID)
 	if !exists {
-		return fmt.Errorf("[StartSubTask] no task record found for workflow %s", payload.WorkflowID)
+		return nil, fmt.Errorf("[StartSubTask] no task record found for workflow %s", payload.WorkflowID)
 	}
 
 	record.TaskRunID = payload.RunID
@@ -192,13 +194,13 @@ func (tm *TaskManager) StartSubTask(payload engine.TaskPayload) error {
 	// 1. Look up the task template to find the associated plugin config
 	regEntry, ok := tm.registry.Get(payload.TaskTemplateID)
 	if !ok {
-		return fmt.Errorf("[StartSubTask] unknown task_template_id: %s", payload.TaskTemplateID)
+		return nil, fmt.Errorf("[StartSubTask] unknown task_template_id: %s", payload.TaskTemplateID)
 	}
 
 	// 2. Fetch the plugin from our registry using both TaskType and PluginName
 	plugin, ok := tm.pluginsRegistry.Get(regEntry.TaskType, regEntry.PluginName)
 	if !ok {
-		return fmt.Errorf("[StartSubTask] unregistered plugin: %s for task type %s (required for template: %s)", regEntry.PluginName, regEntry.TaskType, payload.TaskTemplateID)
+		return nil, fmt.Errorf("[StartSubTask] unregistered plugin: %s for task type %s (required for template: %s)", regEntry.PluginName, regEntry.TaskType, payload.TaskTemplateID)
 	}
 
 	// 3. Execute the plugin
@@ -208,12 +210,19 @@ func (tm *TaskManager) StartSubTask(payload engine.TaskPayload) error {
 		Inputs:  payload.Inputs,
 	}
 
-	if err := plugin.Execute(pluginCtx, regEntry.PluginProperties); err != nil {
-		return fmt.Errorf("[StartSubTask] plugin %q execution failed: %w", regEntry.PluginName, err)
+	err := plugin.Execute(pluginCtx, regEntry.PluginProperties)
+	if errors.Is(err, plugins.ErrSuspended) {
+		tm.db.SaveTask(record)
+		return nil, activity.ErrResultPending
+	}
+	if err != nil {
+		return nil, fmt.Errorf("[StartSubTask] plugin %q execution failed: %w", regEntry.PluginName, err)
 	}
 
 	tm.db.SaveTask(record)
-	return nil
+
+	// Otherwise, this step completed synchronously. Return its modified payload immediately to transition directly.
+	return record.Data, nil
 }
 
 // HandleTaskCompletion is called when a Task workflow hits its END node.

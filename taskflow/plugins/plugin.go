@@ -3,11 +3,15 @@ package plugins
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/OpenNSW/nsw-task-flow/store"
 )
+
+// ErrSuspended is returned by a plugin when it wants to pause task execution and wait for an asynchronous action.
+var ErrSuspended = errors.New("activity result pending")
 
 // PluginContext provides the database record, input arguments, and context
 // to a plugin during execution.

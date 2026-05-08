@@ -3,7 +3,7 @@ module github.com/OpenNSW/nsw-task-flow
 go 1.25.7
 
 require (
-	github.com/OpenNSW/go-temporal-workflow v0.3.2
+	github.com/OpenNSW/go-temporal-workflow v0.3.3
 	github.com/google/uuid v1.6.0
 	go.temporal.io/sdk v1.43.0
 )

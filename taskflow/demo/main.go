@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -77,12 +78,12 @@ func main() {
 	var tm *orchestrator.TaskManager
 
 	// --- Parent Workflow handlers ---
-	parentTaskHandler := func(payload engine.TaskPayload) error {
+	parentTaskHandler := func(payload engine.TaskPayload) (map[string]any, error) {
 		log.Printf("\n[Parent Workflow] Task activated: node=%s template=%s\n", payload.NodeID, payload.TaskTemplateID)
-		if tm != nil {
-			return tm.StartTask(payload)
+		if tm == nil {
+			return nil, fmt.Errorf("task manager is not initialized (misconfiguration)")
 		}
-		return nil
+		return tm.StartTask(payload)
 	}
 
 	parentCompletionHandler := func(workflowID string, finalVariables map[string]any) error {
@@ -98,12 +99,12 @@ func main() {
 	)
 
 	// --- Task Workflow handlers ---
-	taskHandler := func(payload engine.TaskPayload) error {
+	taskHandler := func(payload engine.TaskPayload) (map[string]any, error) {
 		log.Printf("\n[Task Workflow] Step activated: node=%s template=%s\n", payload.NodeID, payload.TaskTemplateID)
-		if tm != nil {
-			return tm.StartSubTask(payload)
+		if tm == nil {
+			return nil, fmt.Errorf("task manager is not initialized (misconfiguration)")
 		}
-		return nil
+		return tm.StartSubTask(payload)
 	}
 
 	taskCompletionHandler := func(workflowID string, finalVariables map[string]any) error {
