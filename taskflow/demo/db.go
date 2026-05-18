@@ -73,11 +73,14 @@ func (db *TaskDB) GetTaskByWorkflowID(_ context.Context, workflowID string) (sto
 	return store.TaskRecord{}, false
 }
 
-func (db *TaskDB) GetAllTasks(_ context.Context) []store.TaskRecord {
+func (db *TaskDB) GetAllTasks(_ context.Context, parentWorkflowID string) []store.TaskRecord {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	var list []store.TaskRecord
 	for _, record := range db.tasks {
+		if parentWorkflowID != "" && record.ParentWorkflowID != parentWorkflowID {
+			continue
+		}
 		list = append(list, record)
 	}
 	return list

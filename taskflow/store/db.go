@@ -40,5 +40,5 @@ type TaskStore interface {
 	SaveTask(context context.Context, record TaskRecord)
 	GetTask(context context.Context, taskID string) (TaskRecord, bool)
 	GetTaskByWorkflowID(context context.Context, workflowID string) (TaskRecord, bool)
-	GetAllTasks(context context.Context) []TaskRecord
+	GetAllTasks(context context.Context, parentWorkflowID string) []TaskRecord
 }

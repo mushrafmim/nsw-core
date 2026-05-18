@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"log/slog"
 	"time"
 
 	engine "github.com/OpenNSW/go-temporal-workflow"
 	"github.com/OpenNSW/nsw-task-flow/plugins"
 	"github.com/OpenNSW/nsw-task-flow/renderer"
 	"github.com/OpenNSW/nsw-task-flow/store"
-	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
 )
 
@@ -118,7 +116,10 @@ func (tm *TaskManager) StartTask(payload engine.TaskPayload) (map[string]any, er
 		return nil, fmt.Errorf("render config %q referenced by task template %q not registered", template.RenderConfigID, template.ID)
 	}
 
-	taskID := "task-" + uuid.New().String()[:8]
+	// Use the parent workflow node ID as the TaskID. This makes the ID stable and
+	// externally derivable — callers that know which parent-workflow node spawned
+	// a task can address it without a separate lookup.
+	taskID := payload.NodeID
 	taskWorkflowID := "task-wf-" + taskID
 
 	initialData := make(map[string]any)
@@ -295,16 +296,23 @@ func (tm *TaskManager) GetTaskRenderInfo(context context.Context, taskID string)
 	return res, nil
 }
 
-// GetAllTasksRenderInfo retrieves all tasks in the store and decorates each of them with dynamic render info.
-func (tm *TaskManager) GetAllTasksRenderInfo(context context.Context) []TaskView {
-	records := tm.db.GetAllTasks(context)
+// GetAllTasks returns a lightweight summary of tasks for listing purposes. The View
+// field is intentionally not populated — callers should use GetTaskRenderInfo to fetch
+// the full rendered view for a specific task.
+//
+// If parentWorkflowID is non-empty, the result is narrowed to tasks spawned by that
+// parent workflow; an empty string returns all tasks.
+func (tm *TaskManager) GetAllTasks(ctx context.Context, parentWorkflowID string) []TaskView {
+	records := tm.db.GetAllTasks(ctx, parentWorkflowID)
 	resList := make([]TaskView, 0, len(records))
 	for _, r := range records {
-		info, err := tm.GetTaskRenderInfo(context, r.TaskID)
-		if err != nil {
-			slog.Info(fmt.Sprintf("failed to render task %s: %v", r.TaskID, err))
-		}
-		resList = append(resList, info)
+		resList = append(resList, TaskView{
+			TaskID:    r.TaskID,
+			TaskType:  r.TaskType,
+			State:     r.State,
+			CreatedAt: r.CreatedAt,
+			UpdatedAt: r.UpdatedAt,
+		})
 	}
 	return resList
 }

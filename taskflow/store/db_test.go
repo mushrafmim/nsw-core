@@ -29,9 +29,12 @@ func (t *testStore) GetTaskByWorkflowID(_ context.Context, workflowID string) (T
 	return TaskRecord{}, false
 }
 
-func (t *testStore) GetAllTasks(_ context.Context) []TaskRecord {
+func (t *testStore) GetAllTasks(_ context.Context, parentWorkflowID string) []TaskRecord {
 	var list []TaskRecord
 	for _, record := range t.tasks {
+		if parentWorkflowID != "" && record.ParentWorkflowID != parentWorkflowID {
+			continue
+		}
 		list = append(list, record)
 	}
 	return list
@@ -74,7 +77,7 @@ func TestTaskStoreInterface(t *testing.T) {
 		t.Errorf("Expected TaskID 'test-1', got %s", fetchedTaskWF.TaskID)
 	}
 
-	all := store.GetAllTasks(ctx)
+	all := store.GetAllTasks(ctx, "")
 	if len(all) != 1 {
 		t.Errorf("Expected exactly 1 task record, got %d", len(all))
 	}

@@ -41,9 +41,12 @@ func (m *memStore) GetTaskByWorkflowID(_ context.Context, wf string) (store.Task
 	}
 	return store.TaskRecord{}, false
 }
-func (m *memStore) GetAllTasks(_ context.Context) []store.TaskRecord {
+func (m *memStore) GetAllTasks(_ context.Context, parentWorkflowID string) []store.TaskRecord {
 	out := make([]store.TaskRecord, 0, len(m.tasks))
 	for _, r := range m.tasks {
+		if parentWorkflowID != "" && r.ParentWorkflowID != parentWorkflowID {
+			continue
+		}
 		out = append(out, r)
 	}
 	return out
@@ -193,19 +196,24 @@ func TestPipeline_EndToEnd_TaskRender(t *testing.T) {
 		t.Fatalf("StartTask: %v", err)
 	}
 
-	// 4. Fetch the rendered view of the just-started task and assert it
-	// matches the markdown that the render config has for the STARTING state.
-	views := tm.GetAllTasksRenderInfo(context.Background())
+	// 4. List tasks (summary, no View), then drill in for the rendered detail
+	// and assert it matches the markdown for the STARTING state.
+	views := tm.GetAllTasks(context.Background(), "")
 	if len(views) != 1 {
 		t.Fatalf("want 1 task view, got %d", len(views))
 	}
-	v := views[0]
+	summary := views[0]
 
-	if v.State != "STARTING" {
-		t.Errorf("State: want STARTING, got %s", v.State)
+	if summary.State != "STARTING" {
+		t.Errorf("State: want STARTING, got %s", summary.State)
 	}
-	if v.TaskType != "APPLICATION" {
-		t.Errorf("TaskType: want APPLICATION, got %s", v.TaskType)
+	if summary.TaskType != "APPLICATION" {
+		t.Errorf("TaskType: want APPLICATION, got %s", summary.TaskType)
+	}
+
+	v, err := tm.GetTaskRenderInfo(context.Background(), summary.TaskID)
+	if err != nil {
+		t.Fatalf("GetTaskRenderInfo: %v", err)
 	}
 
 	comp, ok := v.View["primary"]

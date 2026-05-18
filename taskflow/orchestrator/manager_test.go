@@ -142,11 +142,14 @@ func (s *safeMockTaskStore) GetTaskByWorkflowID(_ context.Context, workflowID st
 	return store.TaskRecord{}, false
 }
 
-func (s *safeMockTaskStore) GetAllTasks(_ context.Context) []store.TaskRecord {
+func (s *safeMockTaskStore) GetAllTasks(_ context.Context, parentWorkflowID string) []store.TaskRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]store.TaskRecord, 0, len(s.tasks))
 	for _, r := range s.tasks {
+		if parentWorkflowID != "" && r.ParentWorkflowID != parentWorkflowID {
+			continue
+		}
 		out = append(out, r)
 	}
 	return out
@@ -241,7 +244,7 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 		t.Error("expected task sub-workflow to be started")
 	}
 
-	tasks := storeMock.GetAllTasks(context.Background())
+	tasks := storeMock.GetAllTasks(context.Background(), "")
 	if len(tasks) != 1 {
 		t.Fatalf("expected exactly 1 task record, got %d", len(tasks))
 	}

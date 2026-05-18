@@ -45,7 +45,8 @@ func (s *server) start(addr string) {
 
 func (s *server) handleGetTasks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.manager.GetAllTasksRenderInfo(r.Context())) //nolint:errcheck
+	parentWorkflowID := r.URL.Query().Get("parent_workflow_id")
+	json.NewEncoder(w).Encode(s.manager.GetAllTasks(r.Context(), parentWorkflowID)) //nolint:errcheck
 }
 
 func (s *server) handleStartWorkflow(w http.ResponseWriter, r *http.Request) {
