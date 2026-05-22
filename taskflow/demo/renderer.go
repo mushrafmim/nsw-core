@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -20,7 +21,7 @@ import (
 //	}
 type SimpleRenderer struct{}
 
-func (SimpleRenderer) Render(config json.RawMessage, facts renderer.Facts) (renderer.RenderResult, error) {
+func (SimpleRenderer) Render(_ context.Context, config json.RawMessage, facts renderer.Facts) (renderer.RenderResult, error) {
 	if len(config) == 0 {
 		return renderer.RenderResult{}, nil
 	}

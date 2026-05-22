@@ -1,6 +1,7 @@
 package renderer
 
 import (
+	"context"
 	"encoding/json"
 )
 
@@ -23,5 +24,5 @@ type Facts struct {
 type Renderer interface {
 	// Render takes the persistent render configuration snapshot and the current task state
 	// (data, status, etc.) to produce the final frontend view.
-	Render(config json.RawMessage, facts Facts) (RenderResult, error)
+	Render(ctx context.Context, config json.RawMessage, facts Facts) (RenderResult, error)
 }
