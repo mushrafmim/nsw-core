@@ -7,10 +7,10 @@ import (
 	"log"
 	"time"
 
-	engine "github.com/OpenNSW/core/workflow"
 	"github.com/OpenNSW/core/taskflow/plugins"
 	"github.com/OpenNSW/core/taskflow/renderer"
 	"github.com/OpenNSW/core/taskflow/store"
+	engine "github.com/OpenNSW/core/workflow"
 	"go.temporal.io/sdk/activity"
 )
 
