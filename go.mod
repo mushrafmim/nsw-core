@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	github.com/expr-lang/expr v1.17.8
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
 	go.temporal.io/sdk v1.44.1
