@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/OpenNSW/core/artifact"
+	"github.com/OpenNSW/core/artifact/testutil"
 	"github.com/OpenNSW/core/taskflow/plugins"
 	"github.com/OpenNSW/core/taskflow/renderer"
 	"github.com/OpenNSW/core/taskflow/store"
@@ -14,42 +16,7 @@ import (
 	"go.temporal.io/sdk/activity"
 )
 
-// ---------------------------------------------------------------------------
-// Fake registry (in-memory implementation of TaskTemplateRegistry for tests)
-// ---------------------------------------------------------------------------
-
-type fakeRegistry struct {
-	tasks    map[string]TaskTemplate
-	subTasks map[string]SubTaskTemplate
-	wfs      map[string]engine.WorkflowDefinition
-	generics map[string]json.RawMessage
-}
-
-func newFakeRegistry() *fakeRegistry {
-	return &fakeRegistry{
-		tasks:    make(map[string]TaskTemplate),
-		subTasks: make(map[string]SubTaskTemplate),
-		wfs:      make(map[string]engine.WorkflowDefinition),
-		generics: make(map[string]json.RawMessage),
-	}
-}
-
-func (r *fakeRegistry) GetTaskTemplate(id string) (TaskTemplate, bool) {
-	t, ok := r.tasks[id]
-	return t, ok
-}
-func (r *fakeRegistry) GetSubTaskTemplate(id string) (SubTaskTemplate, bool) {
-	s, ok := r.subTasks[id]
-	return s, ok
-}
-func (r *fakeRegistry) GetWorkflow(id string) (engine.WorkflowDefinition, bool) {
-	w, ok := r.wfs[id]
-	return w, ok
-}
-func (r *fakeRegistry) GetGenericTemplate(id string) (json.RawMessage, bool) {
-	g, ok := r.generics[id]
-	return g, ok
-}
+// Tests are run against the real artifact.Registry populated with in-memory mocks
 
 // ---------------------------------------------------------------------------
 // No-op renderer
@@ -174,36 +141,51 @@ func newTestPluginsRegistry() *plugins.Registry {
 	return pr
 }
 
-func newTestRegistry() *fakeRegistry {
-	r := newFakeRegistry()
-	r.tasks["test_template"] = TaskTemplate{
-		ID:             "test_template",
-		Type:           "APPLICATION",
-		WorkflowID:     "test_workflow",
-		RenderConfigID: "test_render_config",
-	}
-	r.wfs["test_workflow"] = engine.WorkflowDefinition{ID: "test_workflow"}
-	r.generics["test_render_config"] = json.RawMessage(`{}`)
-
-	r.subTasks["generic_user_input"] = SubTaskTemplate{
-		ID:               "generic_user_input",
-		TaskType:         "USER_INPUT",
-		PluginProperties: []byte(`{"user_jsonforms_id": "user_form"}`),
-		OutputNamespace:  "userform",
-	}
-	r.subTasks["generic_external_review"] = SubTaskTemplate{
-		ID:               "generic_external_review",
-		TaskType:         "EXTERNAL_REVIEW",
-		PluginProperties: []byte(`{"reviewer_jsonforms_id": "reviewer_form", "external_url": "http://localhost/review"}`),
-	}
-	return r
-}
-
-func newTestTaskManager(db store.TaskStore, registry TaskTemplateRegistry, tm engine.TemporalManager, cb TaskCompletedCallback) *TaskManager {
+func newTestTaskManager(db store.TaskStore, registry *artifact.Registry, tm engine.TemporalManager, cb TaskCompletedCallback) *TaskManager {
 	return NewTaskManager(db, registry, newTestPluginsRegistry(), tm, cb, noopRenderer{})
 }
 
 func noopCallback(_, _, _ string, _ map[string]any) error { return nil }
+
+func newTestRegistry() *artifact.Registry {
+	reg := artifact.NewRegistry()
+	m := testutil.MemLoader{
+		"task_test_template.json": []byte(`{
+			"id": "test_template",
+			"type": "TEST",
+			"workflow_id": "test_workflow_v1",
+			"render_config_id": "test_render_config"
+		}`),
+		"wf_test_workflow_v1.json": []byte(`{
+			"id": "test_workflow_v1",
+			"name": "Test Workflow",
+			"version": 1,
+			"nodes": []
+		}`),
+		"generic_render_config.json": []byte(`{}`),
+		"subtask_generic_user_input.json": []byte(`{
+			"id": "generic_user_input",
+			"task_type": "USER_INPUT",
+			"output_namespace": "userform",
+			"plugin_properties": {}
+		}`),
+		"subtask_generic_external_review.json": []byte(`{
+			"id": "generic_external_review",
+			"task_type": "EXTERNAL_REVIEW",
+			"output_namespace": "reviewerform",
+			"plugin_properties": {
+				"external_url": "http://example.com"
+			}
+		}`),
+	}
+	reg.RegisterLoader("mem", m)
+	reg.RegisterArtifact("test_template", "task_template", "", "mem", "task_test_template.json")
+	reg.RegisterArtifact("test_workflow_v1", "workflow", "", "mem", "wf_test_workflow_v1.json")
+	reg.RegisterArtifact("test_render_config", "generic_template", "", "mem", "generic_render_config.json")
+	reg.RegisterArtifact("generic_user_input", "subtask_template", "", "mem", "subtask_generic_user_input.json")
+	reg.RegisterArtifact("generic_external_review", "subtask_template", "", "mem", "subtask_generic_external_review.json")
+	return reg
+}
 
 // ---------------------------------------------------------------------------
 // Lifecycle integration test
@@ -241,7 +223,7 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 		Inputs:         map[string]any{"userform.name": "Alice"},
 	}
 
-	if _, err := tm.StartTask(payload); err != nil && !errors.Is(err, activity.ErrResultPending) {
+	if _, err := tm.StartTask(context.Background(), payload); err != nil && !errors.Is(err, activity.ErrResultPending) {
 		t.Fatalf("StartTask failed: %v", err)
 	}
 	if !taskWorkflowCalled {
@@ -267,7 +249,7 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 		NodeID:         "task-node",
 		TaskTemplateID: "generic_user_input",
 	}
-	if _, err := tm.StartSubTask(payloadTaskWF); err != nil && !errors.Is(err, activity.ErrResultPending) {
+	if _, err := tm.StartSubTask(context.Background(), payloadTaskWF); err != nil && !errors.Is(err, activity.ErrResultPending) {
 		t.Fatalf("StartSubTask failed: %v", err)
 	}
 
@@ -336,7 +318,7 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 func TestStartTask_UnknownTemplateID(t *testing.T) {
 	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
-	_, err := tm.StartTask(engine.TaskPayload{
+	_, err := tm.StartTask(context.Background(), engine.TaskPayload{
 		WorkflowID:     "parent-wf",
 		TaskTemplateID: "does_not_exist",
 	})
@@ -354,7 +336,7 @@ func TestStartTask_TaskWorkflowManagerError(t *testing.T) {
 
 	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), mockTaskWF, noopCallback)
 
-	_, err := tm.StartTask(engine.TaskPayload{
+	_, err := tm.StartTask(context.Background(), engine.TaskPayload{
 		WorkflowID:     "parent-wf",
 		TaskTemplateID: "test_template",
 	})
@@ -370,7 +352,7 @@ func TestStartTask_TaskWorkflowManagerError(t *testing.T) {
 func TestStartSubTask_UnknownWorkflowID(t *testing.T) {
 	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
-	_, err := tm.StartSubTask(engine.TaskPayload{
+	_, err := tm.StartSubTask(context.Background(), engine.TaskPayload{
 		WorkflowID:     "workflow-that-was-never-registered",
 		TaskTemplateID: "generic_user_input",
 	})
@@ -390,7 +372,7 @@ func TestStartSubTask_UnknownTaskTemplateID(t *testing.T) {
 
 	tm := newTestTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
-	_, err := tm.StartSubTask(engine.TaskPayload{
+	_, err := tm.StartSubTask(context.Background(), engine.TaskPayload{
 		WorkflowID:     "task-workflow-1",
 		TaskTemplateID: "not_a_real_template",
 	})
@@ -410,7 +392,7 @@ func TestStartSubTask_ExternalReviewPath(t *testing.T) {
 
 	tm := newTestTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
 
-	_, err := tm.StartSubTask(engine.TaskPayload{
+	_, err := tm.StartSubTask(context.Background(), engine.TaskPayload{
 		WorkflowID:     "task-ext-workflow",
 		RunID:          "run-1",
 		NodeID:         "node-ext",
