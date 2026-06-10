@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/OpenNSW/core/internal/deepcopy"
 	"github.com/OpenNSW/core/taskflow/types"
 )
 
@@ -40,6 +41,33 @@ type TaskRecord struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// DeepCopy returns a copy of the record that shares no mutable reference state
+// (maps, slices, raw-JSON byte buffers) with the original. Scalar fields are
+// duplicated by the value copy; the reference-typed fields are cloned
+// explicitly so a caller handed the copy cannot mutate the source.
+func (r TaskRecord) DeepCopy() TaskRecord {
+	cp := r // value copy duplicates all scalar fields
+	cp.RenderConfig = copyBytes(r.RenderConfig)
+	cp.Data = deepcopy.Map(r.Data)
+	if r.ActiveExtensions != nil {
+		exts := make([]types.ExtensionConfig, len(r.ActiveExtensions))
+		for i, e := range r.ActiveExtensions {
+			e.Properties = copyBytes(e.Properties)
+			exts[i] = e
+		}
+		cp.ActiveExtensions = exts
+	}
+	return cp
+}
+
+// copyBytes returns a copy of b, or nil if b is nil.
+func copyBytes(b json.RawMessage) json.RawMessage {
+	if b == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), b...)
 }
 
 // TaskStore is an interface that any persistent or in-memory database used by the TaskManager should implement.

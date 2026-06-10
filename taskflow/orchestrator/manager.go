@@ -264,9 +264,11 @@ func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payl
 	}
 
 	// 1. Run PRE_RESUME Extensions (Blocking, Read-only)
-	// Extensions receive a deep copy so they can validate/inspect the payload
-	// but cannot mutate the data that gets persisted or sent to the workflow.
-	if err := tm.runExtensions(ctx, &record, types.PhasePreResume, deepcopy.Map(payload), true); err != nil {
+	// Extensions receive deep copies of the record and payload so they can
+	// validate/inspect them but cannot mutate the data that gets persisted or
+	// sent to the workflow.
+	preResumeRecord := record.DeepCopy()
+	if err := tm.runExtensions(ctx, &preResumeRecord, types.PhasePreResume, deepcopy.Map(payload), true); err != nil {
 		return err
 	}
 
@@ -302,11 +304,12 @@ func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payl
 
 	// 2. Run POST_RESUME Extensions (Non-Blocking, Immutable, Async)
 	if tm.extensionsRegistry != nil && len(record.ActiveExtensions) > 0 {
-		// Deep copy payload and record.Data to prevent concurrent map access/data
-		// races: the goroutine must not share nested maps/slices with the live data.
+		// Deep copy the payload and record so extensions cannot mutate the data
+		// that was persisted/sent to the workflow (the read-only contract). As a
+		// bonus this keeps the async goroutine from sharing nested maps/slices
+		// with the live data, avoiding concurrent-map data races.
 		copiedPayload := deepcopy.Map(payload)
-		copiedRecord := record
-		copiedRecord.Data = deepcopy.Map(record.Data)
+		copiedRecord := record.DeepCopy()
 
 		// Use context.WithoutCancel to propagate tracing/telemetry context without cancellation
 		bgCtx := context.WithoutCancel(ctx)

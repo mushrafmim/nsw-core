@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lanka Software Foundation
+
 // Package deepcopy provides recursive deep-copy helpers for JSON-shaped data —
 // values decoded into map[string]any / []any trees. Copying such a tree lets a
 // caller hand it to other code (e.g. an extension or a background goroutine)
