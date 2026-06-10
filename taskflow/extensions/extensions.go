@@ -16,14 +16,17 @@ const (
 	PhasePostResume ExecutionPhase = "POST_RESUME"
 )
 
-// TaskExtension defines the interface for task complete step interceptors.
+// TaskExtension defines the interface for task complete step interceptors. An
+// extension does one job and is unaware of when it runs — the orchestrator owns
+// the lifecycle (which phase to invoke it in, blocking vs async, error
+// handling). This keeps extensions single-purpose and reusable across any phase.
 type TaskExtension interface {
 	// Execute runs the custom interceptor logic.
-	// - phase: the current point in the CompleteTaskStep lifecycle.
 	// - record: the database record representing the task execution context.
-	// - payload: mutable map containing client submitted inputs (mutable only in PhasePreResume).
+	// - payload: read-only map containing client submitted inputs. Extensions may
+	//   inspect it but must not mutate it; any mutations are discarded.
 	// - properties: extension-specific parameters unmarshaled from template config.
-	Execute(ctx context.Context, phase ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error
+	Execute(ctx context.Context, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error
 }
 
 // Registry is a thread-safe registry of task extensions keyed by extension id.

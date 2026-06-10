@@ -558,43 +558,17 @@ func TestSetNestedKey_MergesIntoExistingMap(t *testing.T) {
 	}
 }
 
-func TestCopyMap(t *testing.T) {
-	// 1. Nil map
-	if copyMap(nil) != nil {
-		t.Error("expected copy of nil map to be nil")
-	}
-
-	// 2. Normal copy
-	orig := map[string]any{
-		"key1": "value1",
-		"key2": 42,
-	}
-	copied := copyMap(orig)
-	if len(copied) != len(orig) {
-		t.Fatalf("expected length %d, got %d", len(orig), len(copied))
-	}
-	if copied["key1"] != "value1" || copied["key2"] != 42 {
-		t.Error("copied map contents do not match original")
-	}
-
-	// Verify that modifying the copy does not affect the original
-	copied["key1"] = "mutated"
-	if orig["key1"] != "value1" {
-		t.Error("modifying copied map mutated the original map")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Extensions Pipeline tests
 // ---------------------------------------------------------------------------
 
 type mockExtension struct {
-	executeFunc func(ctx context.Context, phase extensions.ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error
+	executeFunc func(ctx context.Context, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error
 }
 
-func (m *mockExtension) Execute(ctx context.Context, phase extensions.ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
+func (m *mockExtension) Execute(ctx context.Context, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
 	if m.executeFunc != nil {
-		return m.executeFunc(ctx, phase, record, payload, properties)
+		return m.executeFunc(ctx, record, payload, properties)
 	}
 	return nil
 }
@@ -609,28 +583,22 @@ func TestTaskManager_ExtensionsPipeline(t *testing.T) {
 	var postExecutedWg sync.WaitGroup
 	postExecutedWg.Add(1)
 
-	// Register a PRE_RESUME validator extension
+	// Register a validator extension (wired to the PRE_RESUME phase below)
 	extReg.Register("validator", &mockExtension{
-		executeFunc: func(ctx context.Context, phase extensions.ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
-			if phase != extensions.PhasePreResume {
-				return errors.New("expected PRE_RESUME phase")
-			}
+		executeFunc: func(ctx context.Context, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
 			preExecuted = true
 			if payload["age"].(float64) < 18 {
 				return errors.New("underage")
 			}
-			// mutate the payload
+			// attempt to mutate the payload; mutations must be discarded (read-only contract)
 			payload["checked"] = true
 			return nil
 		},
 	})
 
-	// Register a POST_RESUME logger extension
+	// Register a logger extension (wired to the POST_RESUME phase below)
 	extReg.Register("logger", &mockExtension{
-		executeFunc: func(ctx context.Context, phase extensions.ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
-			if phase != extensions.PhasePostResume {
-				return errors.New("expected POST_RESUME phase")
-			}
+		executeFunc: func(ctx context.Context, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
 			postExecuted = true
 			postExecutedWg.Done()
 			return nil
@@ -686,7 +654,7 @@ func TestTaskManager_ExtensionsPipeline(t *testing.T) {
 		},
 	}
 
-	// 2. Test successful validation (mutates and continues to POST_RESUME)
+	// 2. Test successful validation (continues to POST_RESUME)
 	err = tm.CompleteTaskStep(context.Background(), "test-task-ext", map[string]any{"age": 20.0})
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
@@ -705,13 +673,14 @@ func TestTaskManager_ExtensionsPipeline(t *testing.T) {
 		t.Error("post-resume extension was not executed")
 	}
 
-	// Verify DB state is updated including mutated field from PRE_RESUME
+	// Verify DB state is updated, and that the PRE_RESUME extension's mutation
+	// attempt was discarded (extensions receive a read-only copy of the payload).
 	updatedRecord, _ = db.GetTask(context.Background(), "test-task-ext")
 	formData := updatedRecord.Data["form"].(map[string]any)
 	if formData["age"] != 20.0 {
 		t.Errorf("expected age to be 20, got %v", formData["age"])
 	}
-	if formData["checked"] != true {
-		t.Error("expected payload mutation 'checked=true' to be persisted")
+	if _, mutated := formData["checked"]; mutated {
+		t.Error("expected PRE_RESUME payload mutation to be discarded, but 'checked' was persisted")
 	}
 }

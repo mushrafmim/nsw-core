@@ -15,6 +15,7 @@ import (
 	"github.com/OpenNSW/core/artifactadapter/subtasktemplate"
 	"github.com/OpenNSW/core/artifactadapter/tasktemplate"
 	"github.com/OpenNSW/core/artifactadapter/workflowdef"
+	"github.com/OpenNSW/core/internal/deepcopy"
 	"github.com/OpenNSW/core/taskflow/extensions"
 	"github.com/OpenNSW/core/taskflow/plugins"
 	"github.com/OpenNSW/core/taskflow/renderer"
@@ -261,8 +262,10 @@ func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payl
 		record.Data = make(map[string]any)
 	}
 
-	// 1. Run PRE_RESUME Extensions (Blocking, Mutable)
-	if err := tm.runExtensions(ctx, &record, extensions.PhasePreResume, payload, true); err != nil {
+	// 1. Run PRE_RESUME Extensions (Blocking, Read-only)
+	// Extensions receive a deep copy so they can validate/inspect the payload
+	// but cannot mutate the data that gets persisted or sent to the workflow.
+	if err := tm.runExtensions(ctx, &record, extensions.PhasePreResume, deepcopy.Map(payload), true); err != nil {
 		return err
 	}
 
@@ -298,10 +301,11 @@ func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payl
 
 	// 2. Run POST_RESUME Extensions (Non-Blocking, Immutable, Async)
 	if tm.extensionsRegistry != nil && len(record.ActiveExtensions) > 0 {
-		// Shallow copy payload and record.Data to prevent concurrent map access/data races
-		copiedPayload := copyMap(payload)
+		// Deep copy payload and record.Data to prevent concurrent map access/data
+		// races: the goroutine must not share nested maps/slices with the live data.
+		copiedPayload := deepcopy.Map(payload)
 		copiedRecord := record
-		copiedRecord.Data = copyMap(record.Data)
+		copiedRecord.Data = deepcopy.Map(record.Data)
 
 		// Use context.WithoutCancel to propagate tracing/telemetry context without cancellation
 		bgCtx := context.WithoutCancel(ctx)
@@ -335,7 +339,7 @@ func (tm *TaskManager) runExtensions(ctx context.Context, record *store.TaskReco
 			log.Printf("[TaskManager] ERROR: %v", err)
 			continue
 		}
-		if err := ext.Execute(ctx, phase, record, payload, extCfg.Properties); err != nil {
+		if err := ext.Execute(ctx, record, payload, extCfg.Properties); err != nil {
 			err = fmt.Errorf("%s extension %q failed: %w", phase, extCfg.ID, err)
 			if stopOnError {
 				return err

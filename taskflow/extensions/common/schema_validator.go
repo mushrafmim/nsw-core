@@ -21,11 +21,7 @@ func NewJSONSchemaValidator() extensions.TaskExtension {
 
 // Execute performs validation on the payload map.
 // The properties argument must be a valid JSON Schema draft-4, draft-6, or draft-7 document.
-func (v *JSONSchemaValidator) Execute(ctx context.Context, phase extensions.ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
-	if phase != extensions.PhasePreResume {
-		return nil
-	}
-
+func (v *JSONSchemaValidator) Execute(ctx context.Context, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
 	if len(properties) == 0 || string(properties) == "null" || string(properties) == "{}" {
 		// No schema configured; treat as no-op.
 		return nil

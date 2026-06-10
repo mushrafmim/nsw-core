@@ -10,7 +10,7 @@ import (
 
 type dummyExtension struct{}
 
-func (d *dummyExtension) Execute(ctx context.Context, phase ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
+func (d *dummyExtension) Execute(ctx context.Context, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
 	return nil
 }
 
