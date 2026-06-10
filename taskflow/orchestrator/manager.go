@@ -15,6 +15,7 @@ import (
 	"github.com/OpenNSW/core/artifactadapter/subtasktemplate"
 	"github.com/OpenNSW/core/artifactadapter/tasktemplate"
 	"github.com/OpenNSW/core/artifactadapter/workflowdef"
+	"github.com/OpenNSW/core/taskflow/extensions"
 	"github.com/OpenNSW/core/taskflow/plugins"
 	"github.com/OpenNSW/core/taskflow/renderer"
 	"github.com/OpenNSW/core/taskflow/store"
@@ -75,6 +76,7 @@ type TaskManager struct {
 	renderer            renderer.Renderer
 	registry            *artifact.Registry
 	pluginsRegistry     *plugins.Registry
+	extensionsRegistry  *extensions.Registry
 	onTaskCompleted     TaskCompletedCallback
 	taskWorkflowManager engine.TemporalManager
 }
@@ -91,6 +93,7 @@ func NewTaskManager(
 	db store.TaskStore,
 	registry *artifact.Registry,
 	pluginsRegistry *plugins.Registry,
+	extensionsRegistry *extensions.Registry,
 	taskWorkflowManager engine.TemporalManager,
 	onTaskCompleted TaskCompletedCallback,
 	renderer renderer.Renderer,
@@ -99,6 +102,7 @@ func NewTaskManager(
 		db:                  db,
 		registry:            registry,
 		pluginsRegistry:     pluginsRegistry,
+		extensionsRegistry:  extensionsRegistry,
 		onTaskCompleted:     onTaskCompleted,
 		taskWorkflowManager: taskWorkflowManager,
 		renderer:            renderer,
@@ -182,12 +186,12 @@ func (tm *TaskManager) StartSubTask(ctx context.Context, payload engine.TaskPayl
 		setNestedKey(record.Data, k, v)
 	}
 
-	// 1. Look up the subtask template to find the associated plugin config
 	subTemplate, err := subtasktemplate.Load(ctx, tm.registry, payload.TaskTemplateID)
 	if err != nil {
 		return nil, fmt.Errorf("[StartSubTask] load subtask template %q: %w", payload.TaskTemplateID, err)
 	}
 	record.ActiveOutputNamespace = subTemplate.OutputNamespace
+	record.ActiveExtensions = subTemplate.Extensions
 
 	// 2. Fetch the plugin from our registry using TaskType
 	plugin, ok := tm.pluginsRegistry.Get(subTemplate.TaskType)
@@ -257,6 +261,22 @@ func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payl
 		record.Data = make(map[string]any)
 	}
 
+	// 1. Run PRE_RESUME Extensions (Blocking, Mutable)
+	if tm.extensionsRegistry != nil {
+		for _, extCfg := range record.ActiveExtensions {
+			if extCfg.Phase != string(extensions.PhasePreResume) {
+				continue
+			}
+			ext, registered := tm.extensionsRegistry.Get(extCfg.ID)
+			if !registered {
+				return fmt.Errorf("pre-resume extension %q configured but not registered", extCfg.ID)
+			}
+			if err := ext.Execute(ctx, extensions.PhasePreResume, &record, payload, extCfg.Properties); err != nil {
+				return fmt.Errorf("pre-resume extension %q failed: %w", extCfg.ID, err)
+			}
+		}
+	}
+
 	// Writes are confined to the active subtask's declared OutputNamespace,
 	// which was snapshotted onto the record by StartSubTask. An open
 	// top-level merge would let callers overwrite slots owned by other
@@ -285,6 +305,26 @@ func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payl
 	)
 	if err != nil {
 		return fmt.Errorf("failed to resume task workflow: %w", err)
+	}
+
+	// 2. Run POST_RESUME Extensions (Non-Blocking, Immutable, Async)
+	if tm.extensionsRegistry != nil && len(record.ActiveExtensions) > 0 {
+		go func(rec store.TaskRecord, pay map[string]any) {
+			for _, extCfg := range rec.ActiveExtensions {
+				if extCfg.Phase != string(extensions.PhasePostResume) {
+					continue
+				}
+				ext, registered := tm.extensionsRegistry.Get(extCfg.ID)
+				if !registered {
+					log.Printf("[TaskManager] ERROR: post-resume extension %q configured but not registered", extCfg.ID)
+					continue
+				}
+				// Execute in background; errors are logged, not returned to client
+				if err := ext.Execute(context.Background(), extensions.PhasePostResume, &rec, pay, extCfg.Properties); err != nil {
+					log.Printf("[TaskManager] ERROR: post-resume extension %q failed: %v", extCfg.ID, err)
+				}
+			}
+		}(record, payload)
 	}
 
 	return nil

@@ -12,9 +12,11 @@ import (
 
 	"github.com/OpenNSW/core/artifact"
 	"github.com/OpenNSW/core/artifact/testutil"
+	"github.com/OpenNSW/core/taskflow/extensions"
 	"github.com/OpenNSW/core/taskflow/plugins"
 	"github.com/OpenNSW/core/taskflow/renderer"
 	"github.com/OpenNSW/core/taskflow/store"
+	"github.com/OpenNSW/core/taskflow/types"
 	engine "github.com/OpenNSW/core/workflow"
 	"go.temporal.io/sdk/activity"
 )
@@ -145,7 +147,7 @@ func newTestPluginsRegistry() *plugins.Registry {
 }
 
 func newTestTaskManager(db store.TaskStore, registry *artifact.Registry, tm engine.TemporalManager, cb TaskCompletedCallback) *TaskManager {
-	return NewTaskManager(db, registry, newTestPluginsRegistry(), tm, cb, noopRenderer{})
+	return NewTaskManager(db, registry, newTestPluginsRegistry(), nil, tm, cb, noopRenderer{})
 }
 
 func noopCallback(_, _, _ string, _ map[string]any) error { return nil }
@@ -553,5 +555,137 @@ func TestSetNestedKey_MergesIntoExistingMap(t *testing.T) {
 	}
 	if sub["email"] != "bob@example.com" {
 		t.Errorf("expected 'bob@example.com', got %v", sub["email"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Extensions Pipeline tests
+// ---------------------------------------------------------------------------
+
+type mockExtension struct {
+	executeFunc func(ctx context.Context, phase extensions.ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error
+}
+
+func (m *mockExtension) Execute(ctx context.Context, phase extensions.ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
+	if m.executeFunc != nil {
+		return m.executeFunc(ctx, phase, record, payload, properties)
+	}
+	return nil
+}
+
+func TestTaskManager_ExtensionsPipeline(t *testing.T) {
+	db := newSafeMockTaskStore()
+	registry := newTestRegistry()
+	extReg := extensions.NewRegistry()
+
+	preExecuted := false
+	postExecuted := false
+	var postExecutedWg sync.WaitGroup
+	postExecutedWg.Add(1)
+
+	// Register a PRE_RESUME validator extension
+	extReg.Register("validator", &mockExtension{
+		executeFunc: func(ctx context.Context, phase extensions.ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
+			if phase != extensions.PhasePreResume {
+				return errors.New("expected PRE_RESUME phase")
+			}
+			preExecuted = true
+			if payload["age"].(float64) < 18 {
+				return errors.New("underage")
+			}
+			// mutate the payload
+			payload["checked"] = true
+			return nil
+		},
+	})
+
+	// Register a POST_RESUME logger extension
+	extReg.Register("logger", &mockExtension{
+		executeFunc: func(ctx context.Context, phase extensions.ExecutionPhase, record *store.TaskRecord, payload map[string]any, properties json.RawMessage) error {
+			if phase != extensions.PhasePostResume {
+				return errors.New("expected POST_RESUME phase")
+			}
+			postExecuted = true
+			postExecutedWg.Done()
+			return nil
+		},
+	})
+
+	tm := NewTaskManager(db, registry, newTestPluginsRegistry(), extReg, &mockTemporalManager{}, noopCallback, noopRenderer{})
+
+	// Setup a task record with active subtask and extensions configuration
+	record := store.TaskRecord{
+		TaskID:                "test-task-ext",
+		TaskType:              "TEST",
+		State:                 "PENDING_USER",
+		ActiveTaskTemplateID:  "generic_user_input",
+		ActiveOutputNamespace: "form",
+		TaskWorkflowID:        "wf-123",
+		TaskRunID:             "run-123",
+		SubTaskNodeID:         "node-123",
+		ActiveExtensions: []types.ExtensionConfig{
+			{ID: "validator", Phase: string(extensions.PhasePreResume)},
+			{ID: "logger", Phase: string(extensions.PhasePostResume)},
+		},
+	}
+	db.SaveTask(context.Background(), record)
+
+	// 1. Test failing validation (blocking)
+	err := tm.CompleteTaskStep(context.Background(), "test-task-ext", map[string]any{"age": 16.0})
+	if err == nil {
+		t.Fatal("expected error due to underage payload, got nil")
+	}
+	if preExecuted == false {
+		t.Error("pre-resume extension was not executed")
+	}
+	if postExecuted == true {
+		t.Error("post-resume extension should not have executed on failure")
+	}
+
+	// Verify DB is not updated and Temporal task done not called
+	updatedRecord, _ := db.GetTask(context.Background(), "test-task-ext")
+	if updatedRecord.Data["form"] != nil {
+		t.Error("expected DB not to be updated on failed validation")
+	}
+
+	// Reset execution flag
+	preExecuted = false
+
+	// Mock temporal manager to check if TaskDone is called
+	taskDoneCalled := false
+	tm.taskWorkflowManager = &mockTemporalManager{
+		taskDoneFunc: func(ctx context.Context, workflowID, runID, activityID string, result map[string]any) error {
+			taskDoneCalled = true
+			return nil
+		},
+	}
+
+	// 2. Test successful validation (mutates and continues to POST_RESUME)
+	err = tm.CompleteTaskStep(context.Background(), "test-task-ext", map[string]any{"age": 20.0})
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+
+	if preExecuted == false {
+		t.Error("pre-resume extension was not executed on success")
+	}
+	if !taskDoneCalled {
+		t.Error("expected Temporal TaskDone to be called")
+	}
+
+	// Wait for async POST_RESUME extension to execute
+	postExecutedWg.Wait()
+	if postExecuted == false {
+		t.Error("post-resume extension was not executed")
+	}
+
+	// Verify DB state is updated including mutated field from PRE_RESUME
+	updatedRecord, _ = db.GetTask(context.Background(), "test-task-ext")
+	formData := updatedRecord.Data["form"].(map[string]any)
+	if formData["age"] != 20.0 {
+		t.Errorf("expected age to be 20, got %v", formData["age"])
+	}
+	if formData["checked"] != true {
+		t.Error("expected payload mutation 'checked=true' to be persisted")
 	}
 }

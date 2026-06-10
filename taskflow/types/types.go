@@ -14,11 +14,19 @@ type TaskTemplate struct {
 	RenderConfigID string `json:"render_config_id"` // task-level render config
 }
 
+// ExtensionConfig defines configuration for an extension attached to a subtask step.
+type ExtensionConfig struct {
+	ID         string          `json:"id"`
+	Phase      string          `json:"phase"` // e.g. "PRE_RESUME", "POST_RESUME"
+	Properties json.RawMessage `json:"properties,omitempty"`
+}
+
 // SubTaskTemplate describes a SubTask — an individual execution step inside a
 // Task's workflow that delegates to a plugin.
 type SubTaskTemplate struct {
-	ID               string          `json:"id"`
-	TaskType         string          `json:"task_type"`                  // plugin routing key (e.g. "USER_INPUT")
-	PluginProperties json.RawMessage `json:"plugin_properties"`          // plugin-specific config
-	OutputNamespace  string          `json:"output_namespace,omitempty"` // top-level slot in TaskRecord.Data where CompleteTaskStep payloads are written
+	ID               string            `json:"id"`
+	TaskType         string            `json:"task_type"`                  // plugin routing key (e.g. "USER_INPUT")
+	PluginProperties json.RawMessage   `json:"plugin_properties"`          // plugin-specific config
+	OutputNamespace  string            `json:"output_namespace,omitempty"` // top-level slot in TaskRecord.Data where CompleteTaskStep payloads are written
+	Extensions       []ExtensionConfig `json:"extensions,omitempty"`       // list of extensions to run during CompleteTaskStep
 }
