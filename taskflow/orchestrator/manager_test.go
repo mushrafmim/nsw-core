@@ -558,6 +558,32 @@ func TestSetNestedKey_MergesIntoExistingMap(t *testing.T) {
 	}
 }
 
+func TestCopyMap(t *testing.T) {
+	// 1. Nil map
+	if copyMap(nil) != nil {
+		t.Error("expected copy of nil map to be nil")
+	}
+
+	// 2. Normal copy
+	orig := map[string]any{
+		"key1": "value1",
+		"key2": 42,
+	}
+	copied := copyMap(orig)
+	if len(copied) != len(orig) {
+		t.Fatalf("expected length %d, got %d", len(orig), len(copied))
+	}
+	if copied["key1"] != "value1" || copied["key2"] != 42 {
+		t.Error("copied map contents do not match original")
+	}
+
+	// Verify that modifying the copy does not affect the original
+	copied["key1"] = "mutated"
+	if orig["key1"] != "value1" {
+		t.Error("modifying copied map mutated the original map")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Extensions Pipeline tests
 // ---------------------------------------------------------------------------

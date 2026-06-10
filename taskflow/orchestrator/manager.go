@@ -262,19 +262,8 @@ func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payl
 	}
 
 	// 1. Run PRE_RESUME Extensions (Blocking, Mutable)
-	if tm.extensionsRegistry != nil {
-		for _, extCfg := range record.ActiveExtensions {
-			if extCfg.Phase != string(extensions.PhasePreResume) {
-				continue
-			}
-			ext, registered := tm.extensionsRegistry.Get(extCfg.ID)
-			if !registered {
-				return fmt.Errorf("pre-resume extension %q configured but not registered", extCfg.ID)
-			}
-			if err := ext.Execute(ctx, extensions.PhasePreResume, &record, payload, extCfg.Properties); err != nil {
-				return fmt.Errorf("pre-resume extension %q failed: %w", extCfg.ID, err)
-			}
-		}
+	if err := tm.runExtensions(ctx, &record, extensions.PhasePreResume, payload, true); err != nil {
+		return err
 	}
 
 	// Writes are confined to the active subtask's declared OutputNamespace,
@@ -309,24 +298,51 @@ func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payl
 
 	// 2. Run POST_RESUME Extensions (Non-Blocking, Immutable, Async)
 	if tm.extensionsRegistry != nil && len(record.ActiveExtensions) > 0 {
-		go func(rec store.TaskRecord, pay map[string]any) {
-			for _, extCfg := range rec.ActiveExtensions {
-				if extCfg.Phase != string(extensions.PhasePostResume) {
-					continue
-				}
-				ext, registered := tm.extensionsRegistry.Get(extCfg.ID)
-				if !registered {
-					log.Printf("[TaskManager] ERROR: post-resume extension %q configured but not registered", extCfg.ID)
-					continue
-				}
-				// Execute in background; errors are logged, not returned to client
-				if err := ext.Execute(context.Background(), extensions.PhasePostResume, &rec, pay, extCfg.Properties); err != nil {
-					log.Printf("[TaskManager] ERROR: post-resume extension %q failed: %v", extCfg.ID, err)
-				}
-			}
-		}(record, payload)
+		// Shallow copy payload and record.Data to prevent concurrent map access/data races
+		copiedPayload := copyMap(payload)
+		copiedRecord := record
+		copiedRecord.Data = copyMap(record.Data)
+
+		// Use context.WithoutCancel to propagate tracing/telemetry context without cancellation
+		bgCtx := context.WithoutCancel(ctx)
+
+		// Execute in background; errors are logged inside runExtensions, not returned to client.
+		go func() {
+			_ = tm.runExtensions(bgCtx, &copiedRecord, extensions.PhasePostResume, copiedPayload, false)
+		}()
 	}
 
+	return nil
+}
+
+// runExtensions executes the configured extensions matching phase against the
+// record. When stopOnError is true (pre-resume), the first failure aborts and is
+// returned; otherwise (post-resume) failures are logged and execution continues.
+func (tm *TaskManager) runExtensions(ctx context.Context, record *store.TaskRecord, phase extensions.ExecutionPhase, payload map[string]any, stopOnError bool) error {
+	if tm.extensionsRegistry == nil {
+		return nil
+	}
+	for _, extCfg := range record.ActiveExtensions {
+		if extCfg.Phase != string(phase) {
+			continue
+		}
+		ext, registered := tm.extensionsRegistry.Get(extCfg.ID)
+		if !registered {
+			err := fmt.Errorf("%s extension %q configured but not registered", phase, extCfg.ID)
+			if stopOnError {
+				return err
+			}
+			log.Printf("[TaskManager] ERROR: %v", err)
+			continue
+		}
+		if err := ext.Execute(ctx, phase, record, payload, extCfg.Properties); err != nil {
+			err = fmt.Errorf("%s extension %q failed: %w", phase, extCfg.ID, err)
+			if stopOnError {
+				return err
+			}
+			log.Printf("[TaskManager] ERROR: %v", err)
+		}
+	}
 	return nil
 }
 
