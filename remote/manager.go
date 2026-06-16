@@ -34,15 +34,17 @@ type Registry struct {
 }
 
 type Manager struct {
-	mu      sync.RWMutex
-	configs map[string]ServiceConfig
-	clients map[string]*Client
+	mu             sync.RWMutex
+	configs        map[string]ServiceConfig
+	clients        map[string]*Client
+	authenticators map[string]auth.Authenticator
 }
 
 func NewManager() *Manager {
 	return &Manager{
-		configs: make(map[string]ServiceConfig),
-		clients: make(map[string]*Client),
+		configs:        make(map[string]ServiceConfig),
+		clients:        make(map[string]*Client),
+		authenticators: make(map[string]auth.Authenticator),
 	}
 }
 
@@ -60,13 +62,25 @@ func (m *Manager) LoadServices(filePath string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Reset clients when loading new configs
+	// Reset clients and authenticators when loading new configs
 	m.clients = make(map[string]*Client)
 	m.configs = make(map[string]ServiceConfig)
+	m.authenticators = make(map[string]auth.Authenticator)
 	for _, cfg := range registry.Services {
 		// Normalize URL by removing trailing slash for consistent matching
 		cfg.URL = strings.TrimSuffix(cfg.URL, "/")
 		m.configs[cfg.ID] = cfg
+
+		// Build authenticators eagerly so secret references resolve once, now,
+		// and any misconfiguration (unset env var, unreadable file) fails loud
+		// at startup rather than on the first request.
+		if cfg.Auth != nil {
+			authenticator, err := auth.Build(cfg.Auth.Type, cfg.Auth.Options)
+			if err != nil {
+				return fmt.Errorf("remote: failed to configure auth for service %q: %w", cfg.ID, err)
+			}
+			m.authenticators[cfg.ID] = authenticator
+		}
 	}
 
 	return nil
@@ -169,11 +183,8 @@ func (m *Manager) GetClient(id string) (*Client, error) {
 		opts = append(opts, WithTimeout(d))
 	}
 
-	if cfg.Auth != nil {
-		authenticator, err := m.createAuthenticator(cfg.Auth)
-		if err != nil {
-			return nil, fmt.Errorf("remote: failed to create authenticator for %q: %w", id, err)
-		}
+	// Authenticators are built and resolved once, at load time (see LoadServices).
+	if authenticator, ok := m.authenticators[id]; ok {
 		opts = append(opts, WithAuthenticator(authenticator))
 	}
 
@@ -181,34 +192,6 @@ func (m *Manager) GetClient(id string) (*Client, error) {
 	m.clients[id] = newClient
 
 	return newClient, nil
-}
-
-func (m *Manager) createAuthenticator(cfg *AuthConfig) (auth.Authenticator, error) {
-	switch cfg.Type {
-	case "api_key":
-		var apiCfg auth.APIKeyConfig
-		if err := json.Unmarshal(cfg.Options, &apiCfg); err != nil {
-			return nil, fmt.Errorf("invalid api_key options: %w", err)
-		}
-		return auth.NewAPIKey(apiCfg), nil
-
-	case "bearer":
-		var bearerCfg auth.BearerConfig
-		if err := json.Unmarshal(cfg.Options, &bearerCfg); err != nil {
-			return nil, fmt.Errorf("invalid bearer options: %w", err)
-		}
-		return auth.NewBearer(bearerCfg), nil
-
-	case "oauth2":
-		var oauthCfg auth.OAuth2Config
-		if err := json.Unmarshal(cfg.Options, &oauthCfg); err != nil {
-			return nil, fmt.Errorf("invalid oauth2 options: %w", err)
-		}
-		return auth.NewOAuth2(oauthCfg), nil
-
-	default:
-		return nil, fmt.Errorf("unsupported auth type: %s", cfg.Type)
-	}
 }
 
 func (m *Manager) ListServices() []string {

@@ -16,14 +16,27 @@ import (
 )
 
 type OAuth2Config struct {
-	TokenURL     string   `json:"token_url"`
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"client_secret"`
-	Scopes       []string `json:"scopes,omitempty"`
+	TokenURL     string    `json:"token_url"`
+	ClientID     string    `json:"client_id"`
+	ClientSecret SecretRef `json:"client_secret"`
+	Scopes       []string  `json:"scopes,omitempty"`
+}
+
+// build resolves the configured client secret (failing loud on an unresolvable
+// reference) and constructs the authenticator.
+func (c OAuth2Config) build() (Authenticator, error) {
+	clientSecret, err := c.ClientSecret.Resolve()
+	if err != nil {
+		return nil, fmt.Errorf("oauth2 client_secret: %w", err)
+	}
+	return NewOAuth2(c.TokenURL, c.ClientID, clientSecret, c.Scopes), nil
 }
 
 type OAuth2 struct {
-	cfg OAuth2Config
+	tokenURL     string
+	clientID     string
+	clientSecret string
+	scopes       []string
 
 	// Internal client for fetching tokens
 	httpClient *http.Client
@@ -33,8 +46,15 @@ type OAuth2 struct {
 	expiry      time.Time
 }
 
-func NewOAuth2(cfg OAuth2Config) *OAuth2 {
-	return &OAuth2{cfg: cfg}
+// NewOAuth2 builds an OAuth2 client-credentials authenticator from
+// already-resolved values.
+func NewOAuth2(tokenURL, clientID, clientSecret string, scopes []string) *OAuth2 {
+	return &OAuth2{
+		tokenURL:     tokenURL,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		scopes:       scopes,
+	}
 }
 
 type oauth2TokenResponse struct {
@@ -82,13 +102,13 @@ func (a *OAuth2) refreshToken(ctx context.Context) (string, time.Time, error) {
 
 	data := url.Values{}
 	data.Set("grant_type", "client_credentials")
-	data.Set("client_id", a.cfg.ClientID)
-	data.Set("client_secret", a.cfg.ClientSecret)
-	if len(a.cfg.Scopes) > 0 {
-		data.Set("scope", strings.Join(a.cfg.Scopes, " "))
+	data.Set("client_id", a.clientID)
+	data.Set("client_secret", a.clientSecret)
+	if len(a.scopes) > 0 {
+		data.Set("scope", strings.Join(a.scopes, " "))
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.TokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("failed to create token request: %w", err)
 	}

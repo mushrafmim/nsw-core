@@ -11,7 +11,7 @@ import (
 )
 
 func TestBearer_Apply(t *testing.T) {
-	auth := NewBearer(BearerConfig{Token: "my-token"})
+	auth := NewBearer("my-token")
 	req, _ := http.NewRequest(http.MethodGet, "http://local", nil)
 
 	err := auth.Apply(req)

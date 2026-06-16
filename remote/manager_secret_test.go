@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lanka Software Foundation
+
+package remote
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// writeServices writes a services.json with a single bearer-auth service whose
+// token is the given (possibly scheme-prefixed) reference, and returns its path.
+func writeServices(t *testing.T, url, tokenRef string) string {
+	t.Helper()
+	body := fmt.Sprintf(
+		`{"version":"1.0","services":[{"id":"svc","url":%q,"auth":{"type":"bearer","options":{"token":%q}}}]}`,
+		url, tokenRef,
+	)
+	path := filepath.Join(t.TempDir(), "services.json")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	return path
+}
+
+func TestManager_LoadServices_ResolvesEnvSecretAtStartup(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("SVC_TOKEN", "resolved-token")
+	path := writeServices(t, server.URL, "env:SVC_TOKEN")
+
+	manager := NewManager()
+	require.NoError(t, manager.LoadServices(path))
+
+	err := manager.Call(context.Background(), "svc", Request{Method: "GET", Path: "/"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer resolved-token", gotAuth)
+}
+
+func TestManager_LoadServices_FailsLoudOnUnsetEnv(t *testing.T) {
+	path := writeServices(t, "http://local", "env:DEFINITELY_UNSET_TOKEN")
+
+	manager := NewManager()
+	err := manager.LoadServices(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to configure auth for service")
+}
+
+func TestManager_LoadServices_LiteralTokenStillWorks(t *testing.T) {
+	// Backward compatibility: a plain literal token resolves to itself.
+	path := writeServices(t, "http://local", "plain-token")
+
+	manager := NewManager()
+	require.NoError(t, manager.LoadServices(path))
+}

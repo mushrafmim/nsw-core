@@ -22,7 +22,7 @@ func TestOAuth2_Apply(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		auth := NewOAuth2(OAuth2Config{TokenURL: ts.URL})
+		auth := NewOAuth2(ts.URL, "", "", nil)
 		req, _ := http.NewRequest(http.MethodGet, "http://local", nil)
 
 		err := auth.Apply(req)
@@ -32,7 +32,7 @@ func TestOAuth2_Apply(t *testing.T) {
 
 	t.Run("error", func(t *testing.T) {
 		// Providing an invalid URL to trigger getToken error
-		auth := NewOAuth2(OAuth2Config{TokenURL: "cache-busting-invalid-url"})
+		auth := NewOAuth2("cache-busting-invalid-url", "", "", nil)
 		req, _ := http.NewRequest(http.MethodGet, "http://local", nil)
 
 		err := auth.Apply(req)
@@ -51,11 +51,7 @@ func TestOAuth2_getToken_Caching(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	auth := NewOAuth2(OAuth2Config{
-		TokenURL:     ts.URL,
-		ClientID:     "client-1",
-		ClientSecret: "secret-1",
-	})
+	auth := NewOAuth2(ts.URL, "client-1", "secret-1", nil)
 
 	// First call
 	t1, err := auth.getToken(context.Background())
@@ -83,7 +79,7 @@ func TestOAuth2_ExpiryBuffer(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	auth.cfg.TokenURL = ts.URL
+	auth.tokenURL = ts.URL
 
 	t1, err := auth.getToken(context.Background())
 	require.NoError(t, err)
@@ -92,14 +88,14 @@ func TestOAuth2_ExpiryBuffer(t *testing.T) {
 
 func TestOAuth2_Errors(t *testing.T) {
 	t.Run("invalid token url", func(t *testing.T) {
-		auth := NewOAuth2(OAuth2Config{TokenURL: "http://invalid-dns-name-xyz.local"})
+		auth := NewOAuth2("http://invalid-dns-name-xyz.local", "", "", nil)
 		_, err := auth.getToken(context.Background())
 		assert.Error(t, err)
 	})
 
 	t.Run("request creation failure", func(t *testing.T) {
 		// A URL with a control character will cause http.NewRequest to fail
-		auth := NewOAuth2(OAuth2Config{TokenURL: "http://example.com/\x7f"})
+		auth := NewOAuth2("http://example.com/\x7f", "", "", nil)
 		_, err := auth.getToken(context.Background())
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to create token request")
@@ -111,7 +107,7 @@ func TestOAuth2_Errors(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		auth := NewOAuth2(OAuth2Config{TokenURL: ts.URL})
+		auth := NewOAuth2(ts.URL, "", "", nil)
 		_, err := auth.getToken(context.Background())
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "status 500")
@@ -124,7 +120,7 @@ func TestOAuth2_Errors(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		auth := NewOAuth2(OAuth2Config{TokenURL: ts.URL})
+		auth := NewOAuth2(ts.URL, "", "", nil)
 		_, err := auth.getToken(context.Background())
 		assert.Error(t, err)
 	})
@@ -136,7 +132,7 @@ func TestOAuth2_Errors(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		auth := NewOAuth2(OAuth2Config{TokenURL: ts.URL})
+		auth := NewOAuth2(ts.URL, "", "", nil)
 		_, err := auth.getToken(context.Background())
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "no access token")
@@ -154,10 +150,7 @@ func TestOAuth2_Scopes(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	auth := NewOAuth2(OAuth2Config{
-		TokenURL: ts.URL,
-		Scopes:   []string{"read", "write"},
-	})
+	auth := NewOAuth2(ts.URL, "", "", []string{"read", "write"})
 
 	token, err := auth.getToken(context.Background())
 	assert.NoError(t, err)
@@ -171,7 +164,7 @@ func TestOAuth2_ContextCancel(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	auth := NewOAuth2(OAuth2Config{TokenURL: ts.URL})
+	auth := NewOAuth2(ts.URL, "", "", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 

@@ -5,14 +5,15 @@ package remote
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestManager_LoadServices_Errors(t *testing.T) {
@@ -69,85 +70,33 @@ func TestManager_LoadServices_Reload(t *testing.T) {
 	manager.mu.RUnlock()
 }
 
-func TestManager_GetClient_AuthTypes(t *testing.T) {
+func TestManager_LoadServices_AttachesAuthenticator(t *testing.T) {
+	// A service with valid auth loads, and its authenticator is attached to the
+	// client built by GetClient. (The auth-type matrix itself is covered by
+	// auth.Build's tests.)
+	body := `{"version":"1.0","services":[{"id":"svc","url":"http://local",` +
+		`"auth":{"type":"bearer","options":{"token":"my-token"}}}]}`
+	path := filepath.Join(t.TempDir(), "services.json")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+
 	manager := NewManager()
+	require.NoError(t, manager.LoadServices(path))
 
-	tests := []struct {
-		name     string
-		authType string
-		options  any
-		wantErr  bool
-	}{
-		{
-			name:     "api_key success",
-			authType: "api_key",
-			options:  map[string]string{"key": "X-API", "value": "secret"},
-			wantErr:  false,
-		},
-		{
-			name:     "bearer success",
-			authType: "bearer",
-			options:  map[string]string{"token": "my-token"},
-			wantErr:  false,
-		},
-		{
-			name:     "oauth2 success",
-			authType: "oauth2",
-			options: map[string]any{
-				"token_url":     "http://auth",
-				"client_id":     "id",
-				"client_secret": "secret",
-			},
-			wantErr: false,
-		},
-		{
-			name:     "unsupported type",
-			authType: "biometric",
-			options:  map[string]string{"fingerprint": "xyz"},
-			wantErr:  true,
-		},
-		{
-			name:     "invalid api_key options",
-			authType: "api_key",
-			options:  "not-a-map",
-			wantErr:  true,
-		},
-		{
-			name:     "invalid bearer options",
-			authType: "bearer",
-			options:  "not-a-map",
-			wantErr:  true,
-		},
-		{
-			name:     "invalid oauth2 options",
-			authType: "oauth2",
-			options:  "not-a-map",
-			wantErr:  true,
-		},
-	}
+	client, err := manager.GetClient("svc")
+	require.NoError(t, err)
+	assert.NotNil(t, client.authenticator)
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			optsJSON, _ := json.Marshal(tt.options)
-			cfg := ServiceConfig{
-				ID:  tt.name,
-				URL: "http://local",
-				Auth: &AuthConfig{
-					Type:    tt.authType,
-					Options: optsJSON,
-				},
-			}
-			manager.configs[tt.name] = cfg
+func TestManager_LoadServices_UnsupportedAuthType(t *testing.T) {
+	body := `{"version":"1.0","services":[{"id":"svc","url":"http://local",` +
+		`"auth":{"type":"biometric","options":{}}}]}`
+	path := filepath.Join(t.TempDir(), "services.json")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 
-			client, err := manager.GetClient(tt.name)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, client)
-			}
-		})
-	}
+	manager := NewManager()
+	err := manager.LoadServices(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported auth type")
 }
 
 func TestManager_GetClient_NoAuth(t *testing.T) {

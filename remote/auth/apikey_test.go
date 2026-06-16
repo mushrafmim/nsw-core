@@ -11,7 +11,7 @@ import (
 )
 
 func TestAPIKey_Apply(t *testing.T) {
-	auth := NewAPIKey(APIKeyConfig{Key: "X-Key", Value: "secret"})
+	auth := NewAPIKey("X-Key", "secret")
 	req, _ := http.NewRequest(http.MethodGet, "http://local", nil)
 
 	err := auth.Apply(req)
