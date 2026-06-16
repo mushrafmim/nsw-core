@@ -59,17 +59,15 @@ func (m *Manager) LoadServices(filePath string) error {
 		return fmt.Errorf("remote: failed to unmarshal services registry: %w", err)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Reset clients and authenticators when loading new configs
-	m.clients = make(map[string]*Client)
-	m.configs = make(map[string]ServiceConfig)
-	m.authenticators = make(map[string]auth.Authenticator)
+	// Prepare the new state outside the lock: this performs I/O (resolving secret
+	// references in auth.Build) without blocking concurrent readers, and ensures a
+	// failure leaves the manager's existing state untouched rather than corrupted.
+	configs := make(map[string]ServiceConfig, len(registry.Services))
+	authenticators := make(map[string]auth.Authenticator)
 	for _, cfg := range registry.Services {
 		// Normalize URL by removing trailing slash for consistent matching
 		cfg.URL = strings.TrimSuffix(cfg.URL, "/")
-		m.configs[cfg.ID] = cfg
+		configs[cfg.ID] = cfg
 
 		// Build authenticators eagerly so secret references resolve once, now,
 		// and any misconfiguration (unset env var, unreadable file) fails loud
@@ -79,9 +77,16 @@ func (m *Manager) LoadServices(filePath string) error {
 			if err != nil {
 				return fmt.Errorf("remote: failed to configure auth for service %q: %w", cfg.ID, err)
 			}
-			m.authenticators[cfg.ID] = authenticator
+			authenticators[cfg.ID] = authenticator
 		}
 	}
+
+	// Swap in the validated state atomically, and reset the client cache.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clients = make(map[string]*Client)
+	m.configs = configs
+	m.authenticators = authenticators
 
 	return nil
 }

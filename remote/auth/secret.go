@@ -5,6 +5,7 @@ package auth
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -71,8 +72,19 @@ const maxSecretFileSize = 4096 // 4 KB
 // readSecretFile reads and validates a secret file: it must be a regular file
 // (rejecting directories, named pipes, device nodes) no larger than
 // maxSecretFileSize, and its trimmed contents must be non-empty.
+//
+// The file is opened first and every check and the read operate on that single
+// descriptor, so a concurrent swap of the path (e.g. via a symlink) cannot slip a
+// different file in between the check and the read (TOCTOU). The read is also
+// capped independently of the stat'd size, in case the file grows afterwards.
 func readSecretFile(path string) (string, error) {
-	fi, err := os.Stat(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, err := f.Stat()
 	if err != nil {
 		return "", err
 	}
@@ -83,9 +95,12 @@ func readSecretFile(path string) (string, error) {
 		return "", fmt.Errorf("file size %d exceeds maximum of %d bytes", fi.Size(), maxSecretFileSize)
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(f, maxSecretFileSize+1))
 	if err != nil {
 		return "", err
+	}
+	if len(data) > maxSecretFileSize {
+		return "", fmt.Errorf("file exceeds maximum of %d bytes", maxSecretFileSize)
 	}
 	val := strings.TrimSpace(string(data))
 	if val == "" {

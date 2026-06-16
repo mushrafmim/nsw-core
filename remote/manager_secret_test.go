@@ -65,3 +65,23 @@ func TestManager_LoadServices_LiteralTokenStillWorks(t *testing.T) {
 	manager := NewManager()
 	require.NoError(t, manager.LoadServices(path))
 }
+
+func TestManager_LoadServices_FailedReloadKeepsPreviousState(t *testing.T) {
+	// A first load succeeds.
+	good := writeServices(t, "http://local", "plain-token")
+	manager := NewManager()
+	require.NoError(t, manager.LoadServices(good))
+	require.Contains(t, manager.ListServices(), "svc")
+
+	// A second load that fails (unresolvable reference) must leave the manager's
+	// existing state untouched, not corrupted/half-applied.
+	bad := writeServices(t, "http://other", "env:DEFINITELY_UNSET_TOKEN")
+	err := manager.LoadServices(bad)
+	require.Error(t, err)
+
+	// The previously loaded service is still usable.
+	assert.Contains(t, manager.ListServices(), "svc")
+	client, err := manager.GetClient("svc")
+	require.NoError(t, err)
+	assert.NotNil(t, client.authenticator)
+}

@@ -95,3 +95,11 @@ func TestBuild_FailsLoudOnUnsetEnv(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is not set or is empty")
 }
+
+func TestBuild_MissingOptions(t *testing.T) {
+	for _, opts := range []json.RawMessage{nil, json.RawMessage("null")} {
+		_, err := Build("bearer", opts)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing options")
+	}
+}

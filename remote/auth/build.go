@@ -31,6 +31,11 @@ func Build(authType string, options json.RawMessage) (Authenticator, error) {
 		return nil, fmt.Errorf("unsupported auth type: %q", authType)
 	}
 
+	// All supported strategies require options; reject an omitted or null block
+	// up front rather than surfacing a cryptic json.Unmarshal(nil) error.
+	if len(options) == 0 || string(options) == "null" {
+		return nil, fmt.Errorf("missing options for auth type %q", authType)
+	}
 	if err := json.Unmarshal(options, cfg); err != nil {
 		return nil, fmt.Errorf("invalid %s options: %w", authType, err)
 	}
