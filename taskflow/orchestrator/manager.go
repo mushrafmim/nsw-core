@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/OpenNSW/core/artifact"
+	"github.com/OpenNSW/core/artifact/adapter/chartdef"
 	"github.com/OpenNSW/core/artifact/adapter/generictemplate"
 	"github.com/OpenNSW/core/artifact/adapter/subtasktemplate"
 	"github.com/OpenNSW/core/artifact/adapter/tasktemplate"
 	"github.com/OpenNSW/core/artifact/adapter/types"
-	"github.com/OpenNSW/core/artifact/adapter/workflowdef"
 	"github.com/OpenNSW/core/internal/deepcopy"
 	"github.com/OpenNSW/core/internal/maputil"
 	"github.com/OpenNSW/core/taskflow/extensions"
@@ -24,6 +24,7 @@ import (
 	"github.com/OpenNSW/core/taskflow/renderer"
 	"github.com/OpenNSW/core/taskflow/store"
 	engine "github.com/OpenNSW/core/workflow"
+	"github.com/mushrafmim/fsm"
 	"go.temporal.io/sdk/activity"
 )
 
@@ -76,14 +77,14 @@ type TaskCompletedCallback func(parentWorkflowID string, parentRunID string, par
 // TaskManager orchestrates decoupled tasks and interactions under parent workflows.
 // It bridges macro-level workflows and micro-level interactive tasks via a single DB entry per task.
 type TaskManager struct {
-	db                  store.TaskStore
-	renderer            renderer.Renderer
-	registry            *artifact.Registry
-	pluginsRegistry     *plugins.Registry
-	extensionsRegistry  *extensions.Registry
-	onTaskCompleted     TaskCompletedCallback
-	taskWorkflowManager engine.TemporalManager
-	logger              *slog.Logger
+	db                 store.TaskStore
+	renderer           renderer.Renderer
+	registry           *artifact.Registry
+	pluginsRegistry    *plugins.Registry
+	extensionsRegistry *extensions.Registry
+	onTaskCompleted    TaskCompletedCallback
+	taskWorkflowEngine SubTaskEngine
+	logger             *slog.Logger
 }
 
 // NewTaskManager creates a TaskManager instance.
@@ -91,7 +92,9 @@ type TaskManager struct {
 //   - db                  — the persistence/in-memory task store.
 //   - registry            — artifact registry holding task templates, subtask templates, workflow definitions, and render configs.
 //   - pluginsRegistry     — registry containing task execution plugin handlers.
-//   - taskWorkflowManager — the TemporalManager used to start and complete Task sub-workflows.
+//   - taskWorkflowEngine  — the fsm-backed SubTaskEngine used to start Task micro-journeys
+//     and resume their parked subtasks. Wire the engine with SubTaskHandler (fsm.WithHandler)
+//     and CompletionHandler (fsm.WithCompletionHandler) so its states route back into this manager.
 //   - onTaskCompleted     — callback invoked when a Task workflow finishes;
 //     typically invokes Parent.TaskDone to resume the parent workflow using stored coordinates.
 func NewTaskManager(
@@ -99,20 +102,20 @@ func NewTaskManager(
 	registry *artifact.Registry,
 	pluginsRegistry *plugins.Registry,
 	extensionsRegistry *extensions.Registry,
-	taskWorkflowManager engine.TemporalManager,
+	taskWorkflowEngine SubTaskEngine,
 	onTaskCompleted TaskCompletedCallback,
 	renderer renderer.Renderer,
 	opts ...Option,
 ) *TaskManager {
 	tm := &TaskManager{
-		db:                  db,
-		registry:            registry,
-		pluginsRegistry:     pluginsRegistry,
-		extensionsRegistry:  extensionsRegistry,
-		onTaskCompleted:     onTaskCompleted,
-		taskWorkflowManager: taskWorkflowManager,
-		renderer:            renderer,
-		logger:              slog.Default(),
+		db:                 db,
+		registry:           registry,
+		pluginsRegistry:    pluginsRegistry,
+		extensionsRegistry: extensionsRegistry,
+		onTaskCompleted:    onTaskCompleted,
+		taskWorkflowEngine: taskWorkflowEngine,
+		renderer:           renderer,
+		logger:             slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(tm)
@@ -132,9 +135,9 @@ func (tm *TaskManager) StartTask(ctx context.Context, payload engine.TaskPayload
 		return nil, fmt.Errorf("load task template %q: %w", payload.TaskTemplateID, err)
 	}
 
-	wfDef, err := workflowdef.Load(ctx, tm.registry, template.WorkflowID)
+	chart, err := chartdef.Load(ctx, tm.registry, template.WorkflowID)
 	if err != nil {
-		return nil, fmt.Errorf("load workflow %q referenced by task template %q: %w", template.WorkflowID, template.ID, err)
+		return nil, fmt.Errorf("load chart %q referenced by task template %q: %w", template.WorkflowID, template.ID, err)
 	}
 
 	renderConfig, err := generictemplate.Load(ctx, tm.registry, template.RenderConfigID)
@@ -174,20 +177,15 @@ func (tm *TaskManager) StartTask(ctx context.Context, payload engine.TaskPayload
 		Data:             initialData,
 		CreatedAt:        time.Now(),
 	}
-	// Verify that there are no parallel execution paths before writing anything,
-	// as TaskRecord only stores coordinates for a single active subtask.
-	for _, node := range wfDef.Nodes {
-		if node.Type == engine.NodeTypeGateway && node.GatewayType == engine.GatewayTypeParallelSplit {
-			return nil, fmt.Errorf("parallel subtasks are not supported: task workflow %s contains parallel gateway %s (%s)", wfDef.ID, node.ID, node.GatewayType)
-		}
-	}
-
+	// An fsm chart is a single-active-task walk, so parallel subtasks can't arise
+	// (TaskRecord stores coordinates for one active subtask, which matches). The
+	// old parallel-gateway guard is therefore unnecessary here.
 	tm.db.SaveTask(ctx, record)
 	tm.logger.InfoContext(ctx, "task record created", "task_id", taskID, "template", payload.TaskTemplateID, "task_type", template.Type)
 
-	err = tm.taskWorkflowManager.StartWorkflow(ctx, taskWorkflowID, wfDef, initialData)
+	_, err = tm.taskWorkflowEngine.Start(ctx, taskWorkflowID, chart, initialData)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start task workflow: %v", err)
+		return nil, fmt.Errorf("failed to start task workflow: %w", err)
 	}
 	tm.logger.InfoContext(ctx, "task workflow started", "task_workflow_id", taskWorkflowID, "task_id", taskID)
 	return nil, activity.ErrResultPending
@@ -357,14 +355,16 @@ func (tm *TaskManager) CompleteTaskStep(ctx context.Context, taskID string, payl
 	}
 	tm.db.SaveTask(ctx, record)
 
-	tm.logger.InfoContext(ctx, "waking active activity", "activity_id", record.SubTaskNodeID, "task_workflow_id", record.TaskWorkflowID, "task_id", taskID)
+	tm.logger.InfoContext(ctx, "resuming parked subtask", "subtask_node_id", record.SubTaskNodeID, "task_workflow_id", record.TaskWorkflowID, "task_id", taskID)
 
-	err = tm.taskWorkflowManager.TaskDone(
+	// Resume the execution's currently-parked task by its execution id (the
+	// TaskWorkflowID). The submission travels back as the Result's data under the
+	// default (empty-command) transition; the authoritative subtask state was
+	// already written to record.Data above.
+	err = tm.taskWorkflowEngine.CompleteByExecution(
 		ctx,
 		record.TaskWorkflowID,
-		record.TaskRunID,
-		record.SubTaskNodeID,
-		payload, // pass full namespaced state back to the workflow
+		fsm.Result{Data: payload},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to resume task workflow: %w", err)

@@ -18,7 +18,9 @@ import (
 	"github.com/OpenNSW/core/taskflow/renderer"
 	"github.com/OpenNSW/core/taskflow/store"
 	engine "github.com/OpenNSW/core/workflow"
+	"github.com/mushrafmim/fsm"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/client"
 )
 
 // Tests are run against the real artifact.Registry populated with in-memory mocks
@@ -37,49 +39,23 @@ func (noopRenderer) Render(_ context.Context, _ json.RawMessage, _ renderer.Fact
 // Mocks
 // ---------------------------------------------------------------------------
 
-type mockTemporalManager struct {
-	startWorkflowFunc func(ctx context.Context, workflowID string, def engine.WorkflowDefinition, initialVars map[string]any) error
-	taskDoneFunc      func(ctx context.Context, workflowID string, runID string, activityID string, result map[string]any) error
-	startWorkerFunc   func() error
-	stopWorkerFunc    func()
+type mockSubTaskEngine struct {
+	startFunc    func(ctx context.Context, id string, chart fsm.Chart, input fsm.Data) (client.WorkflowRun, error)
+	completeFunc func(ctx context.Context, executionID string, result fsm.Result) error
 }
 
-func (m *mockTemporalManager) StartWorkflow(ctx context.Context, workflowID string, def engine.WorkflowDefinition, initialVars map[string]any) error {
-	if m.startWorkflowFunc != nil {
-		return m.startWorkflowFunc(ctx, workflowID, def, initialVars)
+func (m *mockSubTaskEngine) Start(ctx context.Context, id string, chart fsm.Chart, input fsm.Data) (client.WorkflowRun, error) {
+	if m.startFunc != nil {
+		return m.startFunc(ctx, id, chart, input)
 	}
-	return nil
-}
-
-func (m *mockTemporalManager) TaskDone(ctx context.Context, workflowID string, runID string, activityID string, result map[string]any) error {
-	if m.taskDoneFunc != nil {
-		return m.taskDoneFunc(ctx, workflowID, runID, activityID, result)
-	}
-	return nil
-}
-
-func (m *mockTemporalManager) StartWorker() error {
-	if m.startWorkerFunc != nil {
-		return m.startWorkerFunc()
-	}
-	return nil
-}
-
-func (m *mockTemporalManager) StopWorker() {
-	if m.stopWorkerFunc != nil {
-		m.stopWorkerFunc()
-	}
-}
-
-func (m *mockTemporalManager) TaskUpdate(ctx context.Context, workflowID string, runID string, event engine.UpdateEvent) error {
-	return nil
-}
-
-func (m *mockTemporalManager) GetStatus(ctx context.Context, workflowID string) (*engine.WorkflowInstance, error) {
 	return nil, nil
 }
 
-func (m *mockTemporalManager) RegisterDefinitionHandler(_ func(templateID string) (engine.WorkflowDefinition, error)) {
+func (m *mockSubTaskEngine) CompleteByExecution(ctx context.Context, executionID string, result fsm.Result) error {
+	if m.completeFunc != nil {
+		return m.completeFunc(ctx, executionID, result)
+	}
+	return nil
 }
 
 type safeMockTaskStore struct {
@@ -146,8 +122,8 @@ func newTestPluginsRegistry() *plugins.Registry {
 	return pr
 }
 
-func newTestTaskManager(db store.TaskStore, registry *artifact.Registry, tm engine.TemporalManager, cb TaskCompletedCallback) *TaskManager {
-	return NewTaskManager(db, registry, newTestPluginsRegistry(), nil, tm, cb, noopRenderer{})
+func newTestTaskManager(db store.TaskStore, registry *artifact.Registry, eng SubTaskEngine, cb TaskCompletedCallback) *TaskManager {
+	return NewTaskManager(db, registry, newTestPluginsRegistry(), nil, eng, cb, noopRenderer{})
 }
 
 func noopCallback(_, _, _ string, _ map[string]any) error { return nil }
@@ -161,10 +137,12 @@ func newTestRegistry() *artifact.Registry {
 			"render_config_id": "test_render_config"
 		}`),
 		"wf_test_workflow_v1.json": []byte(`{
-			"id": "test_workflow_v1",
-			"name": "Test Workflow",
-			"version": 1,
-			"nodes": []
+			"schemaVersion": "v1",
+			"initial": "collect",
+			"states": [
+				{"name": "collect", "taskTemplateID": "generic_user_input", "transitions": [{"target": "done"}]},
+				{"name": "done", "end": true}
+			]
 		}`),
 		"generic_render_config.json": []byte(`{}`),
 		"subtask_generic_user_input.json": []byte(`{
@@ -194,7 +172,7 @@ func newTestRegistry() *artifact.Registry {
 	}
 	reg := artifact.NewRegistry(m)
 	reg.RegisterArtifact("test_template", "task_template", "", "task_test_template.json")
-	reg.RegisterArtifact("test_workflow_v1", "workflow", "", "wf_test_workflow_v1.json")
+	reg.RegisterArtifact("test_workflow_v1", "chart", "", "wf_test_workflow_v1.json")
 	reg.RegisterArtifact("test_render_config", "generic_template", "", "generic_render_config.json")
 	reg.RegisterArtifact("generic_user_input", "subtask_template", "", "subtask_generic_user_input.json")
 	reg.RegisterArtifact("generic_user_input_with_extensions", "subtask_template", "", "subtask_generic_user_input_with_extensions.json")
@@ -211,13 +189,13 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 	registry := newTestRegistry()
 
 	taskWorkflowCalled := false
-	mockTaskWFManager := &mockTemporalManager{
-		startWorkflowFunc: func(ctx context.Context, workflowID string, def engine.WorkflowDefinition, initialVars map[string]any) error {
+	mockTaskWFManager := &mockSubTaskEngine{
+		startFunc: func(_ context.Context, _ string, _ fsm.Chart, input fsm.Data) (client.WorkflowRun, error) {
 			taskWorkflowCalled = true
-			if initialVars["_task_id"] == "" {
-				return errors.New("missing task ID in initialVars")
+			if input["_task_id"] == "" {
+				return nil, errors.New("missing task ID in initialVars")
 			}
-			return nil
+			return nil, nil
 		},
 	}
 
@@ -283,13 +261,10 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 
 	// 3. CompleteTaskStep
 	taskDoneCalled := false
-	mockTaskWFManager.taskDoneFunc = func(ctx context.Context, workflowID string, runID string, activityID string, result map[string]any) error {
+	mockTaskWFManager.completeFunc = func(_ context.Context, executionID string, _ fsm.Result) error {
 		taskDoneCalled = true
-		if workflowID != task.TaskWorkflowID {
-			t.Errorf("expected task workflow ID %s, got %s", task.TaskWorkflowID, workflowID)
-		}
-		if activityID != "task-node" {
-			t.Errorf("expected active activity ID 'task-node', got %s", activityID)
+		if executionID != task.TaskWorkflowID {
+			t.Errorf("expected execution ID %s, got %s", task.TaskWorkflowID, executionID)
 		}
 		return nil
 	}
@@ -336,7 +311,7 @@ func TestTaskManager_Lifecycle(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartTask_UnknownTemplateID(t *testing.T) {
-	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
+	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockSubTaskEngine{}, noopCallback)
 
 	_, err := tm.StartTask(context.Background(), engine.TaskPayload{
 		WorkflowID:     "parent-wf",
@@ -348,9 +323,9 @@ func TestStartTask_UnknownTemplateID(t *testing.T) {
 }
 
 func TestStartTask_TaskWorkflowManagerError(t *testing.T) {
-	mockTaskWF := &mockTemporalManager{
-		startWorkflowFunc: func(_ context.Context, _ string, _ engine.WorkflowDefinition, _ map[string]any) error {
-			return errors.New("temporal unavailable")
+	mockTaskWF := &mockSubTaskEngine{
+		startFunc: func(_ context.Context, _ string, _ fsm.Chart, _ fsm.Data) (client.WorkflowRun, error) {
+			return nil, errors.New("temporal unavailable")
 		},
 	}
 
@@ -384,7 +359,7 @@ func TestStartTask_DerivesRootWorkflowID(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			db := newSafeMockTaskStore()
-			tm := newTestTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
+			tm := newTestTaskManager(db, newTestRegistry(), &mockSubTaskEngine{}, noopCallback)
 
 			payload := engine.TaskPayload{
 				WorkflowID:     tc.workflowID,
@@ -412,7 +387,7 @@ func TestStartTask_DerivesRootWorkflowID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartSubTask_UnknownWorkflowID(t *testing.T) {
-	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
+	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockSubTaskEngine{}, noopCallback)
 
 	_, err := tm.StartSubTask(context.Background(), engine.TaskPayload{
 		WorkflowID:     "workflow-that-was-never-registered",
@@ -432,7 +407,7 @@ func TestStartSubTask_UnknownTaskTemplateID(t *testing.T) {
 		Data:           map[string]any{},
 	})
 
-	tm := newTestTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
+	tm := newTestTaskManager(db, newTestRegistry(), &mockSubTaskEngine{}, noopCallback)
 
 	_, err := tm.StartSubTask(context.Background(), engine.TaskPayload{
 		WorkflowID:     "task-workflow-1",
@@ -452,7 +427,7 @@ func TestStartSubTask_ExternalReviewPath(t *testing.T) {
 		Data:           map[string]any{},
 	})
 
-	tm := newTestTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
+	tm := newTestTaskManager(db, newTestRegistry(), &mockSubTaskEngine{}, noopCallback)
 
 	_, err := tm.StartSubTask(context.Background(), engine.TaskPayload{
 		WorkflowID:     "task-ext-workflow",
@@ -475,7 +450,7 @@ func TestStartSubTask_ExternalReviewPath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCompleteTaskStep_UnknownTaskID(t *testing.T) {
-	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
+	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockSubTaskEngine{}, noopCallback)
 
 	err := tm.CompleteTaskStep(context.Background(), "task-ghost", map[string]any{"x": 1})
 	if err == nil {
@@ -491,7 +466,7 @@ func TestCompleteTaskStep_AlreadyCompleted(t *testing.T) {
 		Data:   map[string]any{},
 	})
 
-	tm := newTestTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
+	tm := newTestTaskManager(db, newTestRegistry(), &mockSubTaskEngine{}, noopCallback)
 
 	err := tm.CompleteTaskStep(context.Background(), "task-done", map[string]any{"x": 1})
 	if err == nil {
@@ -507,7 +482,7 @@ func TestCompleteTaskStep_NoActiveSubTask(t *testing.T) {
 		Data:   map[string]any{},
 	})
 
-	tm := newTestTaskManager(db, newTestRegistry(), &mockTemporalManager{}, noopCallback)
+	tm := newTestTaskManager(db, newTestRegistry(), &mockSubTaskEngine{}, noopCallback)
 
 	err := tm.CompleteTaskStep(context.Background(), "task-starting", map[string]any{"x": 1})
 	if err == nil {
@@ -520,7 +495,7 @@ func TestCompleteTaskStep_NoActiveSubTask(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleTaskCompletion_UnknownWorkflowID_ReturnsNil(t *testing.T) {
-	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockTemporalManager{}, noopCallback)
+	tm := newTestTaskManager(newSafeMockTaskStore(), newTestRegistry(), &mockSubTaskEngine{}, noopCallback)
 
 	err := tm.HandleTaskCompletion(context.Background(), "unknown-workflow", map[string]any{"k": "v"})
 	if err != nil {
@@ -538,7 +513,7 @@ func TestHandleTaskCompletion_CallbackError_TaskNotMarkedCompleted(t *testing.T)
 	})
 
 	callbackErr := errors.New("parent unreachable")
-	tm := newTestTaskManager(db, newTestRegistry(), &mockTemporalManager{},
+	tm := newTestTaskManager(db, newTestRegistry(), &mockSubTaskEngine{},
 		func(_, _, _ string, _ map[string]any) error { return callbackErr },
 	)
 
@@ -681,7 +656,7 @@ func TestTaskManager_ExtensionsPipeline(t *testing.T) {
 		},
 	})
 
-	tm := NewTaskManager(db, registry, newTestPluginsRegistry(), extReg, &mockTemporalManager{}, noopCallback, noopRenderer{})
+	tm := NewTaskManager(db, registry, newTestPluginsRegistry(), extReg, &mockSubTaskEngine{}, noopCallback, noopRenderer{})
 
 	// Setup a task record with active subtask configuration
 	record := store.TaskRecord{
@@ -716,10 +691,10 @@ func TestTaskManager_ExtensionsPipeline(t *testing.T) {
 	// Reset execution flag
 	preExecuted = false
 
-	// Mock temporal manager to check if TaskDone is called
+	// Mock sub-task engine to check if the resume (CompleteByExecution) is called
 	taskDoneCalled := false
-	tm.taskWorkflowManager = &mockTemporalManager{
-		taskDoneFunc: func(ctx context.Context, workflowID, runID, activityID string, result map[string]any) error {
+	tm.taskWorkflowEngine = &mockSubTaskEngine{
+		completeFunc: func(_ context.Context, _ string, _ fsm.Result) error {
 			taskDoneCalled = true
 			return nil
 		},

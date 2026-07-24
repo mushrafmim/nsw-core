@@ -12,6 +12,7 @@ require (
 	github.com/expr-lang/expr v1.17.8
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
+	github.com/mushrafmim/fsm v0.0.0-20260724044208-b3ca13651585
 	github.com/stretchr/testify v1.11.1
 	go.temporal.io/sdk v1.46.0
 	gorm.io/gorm v1.31.2
